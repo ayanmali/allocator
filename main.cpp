@@ -36,6 +36,7 @@ struct Allocator {
         }
         free_list = static_cast<Block*>(base);
         free_list->is_free = true;
+        free_list->mapped = false;
         free_list->next = nullptr;
         free_list->size = INITIAL_CHUNK - header_size();
         available_bytes = free_list->size;
@@ -75,7 +76,7 @@ struct Allocator {
             block->next = nullptr;
             block->mapped = false;
             
-            return block + header_size();
+            return block->memory;
         }
 
         // for large requests, allocate via mmap
@@ -87,7 +88,7 @@ struct Allocator {
 
         void* base = mmap(
             // TODO: consider MAP_NORESERVE, MAP_HUGETLB, MAP_LOCKED, MAP_POPULATE
-            curr->next, size,
+            nullptr, size + header_size(),
             PROT_READ | PROT_WRITE, 
             MAP_ANONYMOUS | MAP_PRIVATE,
              -1, 0);
@@ -101,11 +102,11 @@ struct Allocator {
         
         // adjust block metadata
         new_block->is_free = false;
-        new_block->size = size - header_size();
+        new_block->size = size;
         new_block->next = nullptr;
         new_block->mapped = true;
 
-        return new_block + header_size();
+        return new_block->memory;
     }
 
     /*
@@ -115,19 +116,21 @@ struct Allocator {
     template <typename T>
     uint8_t deallocate(T* ptr) {
         // ptr point to the start of the Block's memory
-        Block* block = static_cast<Block*>(ptr - header_size());
+        Block* block = reinterpret_cast<Block*>(
+            reinterpret_cast<std::byte*>(ptr) - header_size()
+        );
         return deallocate(block);
     }
 
     uint8_t deallocate(Block* block) {
         if (block->mapped) {
-            int ok = munmap(block->memory, header_size() + block->size);
+            int ok = munmap(block, header_size() + block->size);
             if (ok == -1) {
                 return -1;
             }
         } 
         else {
-            void* base = sbrk(block->size * -1);
+            void* base = sbrk(-static_cast<intptr_t>(header_size() + block->size));
             if (base == (void*)-1) {
                 return -1;
             }
@@ -141,10 +144,12 @@ struct Allocator {
 
 int main() {
     Allocator allocator{};
-    int* n = (int*)(allocator.allocate(100));
-    Block* b = (Block*) (n - header_size());
-    // std::cout << "Is free: " << b->is_free << "\n";
-    // std::cout << "Block size: " << b->size << "\n";
-    allocator.deallocate(b);
+    int* n = (int*) allocator.allocate(100);
+    allocator.deallocate(n);
+    // int* n = (int*)(allocator.allocate(100));
+    // Block* b = (Block*) (n - header_size());
+    // // std::cout << "Is free: " << b->is_free << "\n";
+    // // std::cout << "Block size: " << b->size << "\n";
+    // allocator.deallocate(b);
     return 0;
 }
