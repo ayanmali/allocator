@@ -77,8 +77,11 @@ struct Allocator {
         return new_block + get_header_size();
     }
 
-    void deallocate(Block* ptr) {
-        ptr->is_free = true;
+    template <typename T>
+    void deallocate(T* ptr) {
+        // ptr is the start of the Block's memory array
+        Block* block = (Block*) ptr - get_header_size();
+        block->is_free = true;
     }
 
 };
