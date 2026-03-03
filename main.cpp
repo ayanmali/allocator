@@ -193,13 +193,38 @@ struct Allocator {
             return block;
         }
 
+        Block* create_block(size_t size, bool is_free, Block* next) {
+            bool mapped = size > MMAP_THRESHOLD;
+            void* ok = mapped ? 
+            mmap(
+                // TODO: consider MAP_NORESERVE, MAP_HUGETLB, MAP_LOCKED, MAP_POPULATE
+                nullptr, size + header_size(),
+                PROT_READ | PROT_WRITE, 
+                MAP_ANONYMOUS | MAP_PRIVATE,
+                -1, 0)
+            :
+            sbrk(static_cast<intptr_t>(size + header_size()));
+
+            // error
+            if (ok == (void*)-1) {
+                return nullptr;
+            }
+            Block* block = static_cast<Block*>(ok);
+            block->size = size;
+            block->is_free = is_free;
+            block->mapped = mapped;
+            block->next = next;
+            return block;
+        }
+
         // coalesce adjacent free blocks together into one combined block
         bool coalesce(Block* prev) {
+            // if `block` and `next` are in the list, then they must be free
             Block* block = prev->next;
             Block* next = block->next;
-            if (next && next->is_free) {
+            if (block && next) {
                 // merge them by adding a new block
-                
+                Block* new_block = create_block(block->size + next->size, true, next->next);
                 // delete the block->next pointer
             }
             return true;
