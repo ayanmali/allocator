@@ -11,12 +11,11 @@ static constexpr size_t MMAP_THRESHOLD = 400;
 
 struct Block {
     // Block header
-    size_t size;
-    bool is_free;
-    bool mapped;
-    Block* next;
-    std::byte memory[];
-
+    size_t size; // size of user memory
+    bool is_free; // true if the block exists in the free list, false otherwise
+    bool mapped; // true if the memory was allocated with mmap, false if it was allocated with sbrk
+    Block* next; // linked list of blocks
+    std::byte memory[]; // user memory
 };
 
 static constexpr size_t header_size() {
@@ -42,24 +41,29 @@ struct Allocator {
         }
 
         void* allocate(const size_t size) {
+            Block* start = free_list;
+
+            // traverse the free list to find a free block that contains enough size to satisfy the request
             if (size <= available_bytes) {
-                // get a block from the free list
+                Block* prev = nullptr;
                 Block* curr = free_list;
                 while (curr) {
                     // look for the first free block that contains enough size to satisfy the request
                     if (curr->is_free && curr->size >= size) {
+                        // pop the block off the free list
+                        if (prev) {
+                            prev->next = curr->next;
+                        } else {
+                            free_list = curr->next;
+                        }
+                        curr->next = nullptr;
                         curr->is_free = false;
                         available_bytes -= curr->size;
                         return curr->memory;
                     }
+                    prev = curr;
                     curr = curr->next;
                 }
-            }
-
-            // traverse to the end of the free list
-            Block* curr = free_list;
-            while (curr && curr->next) {
-                curr = curr->next;
             }
 
             // for large requests, allocate via mmap. For small allocations, shift the program break instead
@@ -73,22 +77,29 @@ struct Allocator {
             if (!new_block) {
                 return (void*)-1;
             }
-            
-            // add new block to the end of the free list
-            curr->next = new_block;
 
             return new_block->memory;
         }
 
         // Returns a block to the free list for reuse, but does not free the memory.
-        // template <typename T>
-        // bool return_back(T* ptr) {
+        // TODO: implement coalescing
+        template <typename T>
+        bool return_back(T* ptr) {
+            // ptr points to the start of the Block's memory
+            Block* block = reinterpret_cast<Block*>(
+                reinterpret_cast<std::byte*>(ptr) - header_size());
+            if (!block) {
+                return false;
+            }
 
-        // }
-
-        // bool return_back(Block* block) {
-
-        // }
+            // add the block to the start of the free list
+            Block* start = free_list;
+            block->next = start;
+            block->is_free = true;
+            free_list = block;
+            available_bytes += block->size;
+            return true;
+        }
 
         /*
         Deallocation involves shrinking the program break (to free memory allocated with sbrk)
@@ -98,18 +109,23 @@ struct Allocator {
         bool deallocate(T* ptr) {
             // ptr point to the start of the Block's memory
             Block* block = reinterpret_cast<Block*>(
-                reinterpret_cast<std::byte*>(ptr) - header_size()
-            );
+                reinterpret_cast<std::byte*>(ptr) - header_size());
             return deallocate(block);
         }
 
+        /*
+        The block may currently be in the free list, in which case we need to unlink it.
+        In any case, memory must be cleaned up
+        */
         bool deallocate(Block* block) {
             if (!block) {
                 return false;
             }
 
-            if (block->mapped) {
-                Block* prev = nullptr;
+            // if the block is free, unlink the block from the free list
+            Block* prev;
+            if (block->is_free) {
+                prev = nullptr;
                 Block* curr = free_list;
                 while (curr && curr != block) {
                     prev = curr;
@@ -118,13 +134,14 @@ struct Allocator {
                 if (!curr) {
                     return false;
                 }
-
                 if (prev) {
                     prev->next = block->next;
                 } else {
                     free_list = block->next;
                 }
+            }
 
+            if (block->mapped) {
                 int ok = munmap(block, header_size() + block->size);
                 if (ok == -1) {
                     // Roll back the unlink if munmap fails.
@@ -138,8 +155,12 @@ struct Allocator {
                 return true;
             }
 
-            // For brk-allocated blocks, keep memory in the allocator and mark free
-            block->is_free = true;
+            // For brk-allocated blocks, can shrink the program break if the block is the last block in the heap
+            int ok = brk(block);
+            if (ok == -1) {
+                return false;
+            }
+    
             available_bytes += block->size;
             return true;
         }
@@ -173,7 +194,7 @@ struct Allocator {
         }
 
         // coalesce adjacent free blocks together into one combined block
-        int8_t coalesce(Block* prev) {
+        bool coalesce(Block* prev) {
             Block* block = prev->next;
             Block* next = block->next;
             if (next && next->is_free) {
@@ -181,7 +202,7 @@ struct Allocator {
                 
                 // delete the block->next pointer
             }
-            return 0;
+            return true;
         }
 
 };
