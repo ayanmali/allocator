@@ -219,15 +219,31 @@ struct Allocator {
 
         // coalesce adjacent free blocks together into one combined block
         bool coalesce(Block* prev) {
+            if (!prev || !prev->next || !prev->next->next) {
+                return false;
+            }
             // if `block` and `next` are in the list, then they must be free
             Block* block = prev->next;
             Block* next = block->next;
-            if (block && next) {
-                // merge them by adding a new block
-                Block* new_block = create_block(block->size + next->size, true, next->next);
-                // delete the block->next pointer
+
+            // check if the two blocks are physically adjacent in memory
+            std::byte* block_end = reinterpret_cast<std::byte*>(block) + header_size() + block->size;
+            std::byte* next_start = reinterpret_cast<std::byte*>(next);
+
+            // check for adjacency + same allocation method
+            if (block_end == next_start && block->mapped == next->mapped) {
+                block->size += header_size() + next->size; // take all of the capacity allotted to the next block
+
+                // unlink the next block from the free list
+                block->next = next->next;
+                
+                // update available bytes (gained header space)
+                available_bytes += header_size();
+
+                return true;
             }
-            return true;
+            
+            return false;
         }
 
 };
