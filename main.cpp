@@ -189,7 +189,8 @@ struct Allocator {
         }
 
         static Footer* footer_of(Block* block) {
-            return reinterpret_cast<Footer*>(block_end(block) - footer_size());
+            //return reinterpret_cast<Footer*>(block_end(block) - footer_size());
+            return reinterpret_cast<Footer*>(block->memory + block->size);
         }
 
         static void write_footer(Block* block) {
@@ -234,12 +235,10 @@ struct Allocator {
             }
 
             Block* prev = reinterpret_cast<Block*>(prev_addr);
-            if (prev->mapped != prev_footer->mapped) {
-                return nullptr;
-            }
-            return prev;
+            return prev->mapped == prev_footer->mapped ? prev : nullptr;
         }
 
+        // Inserts the block at the start of the free list
         void insert_free(Block* block) {
             block->next = free_list;
             free_list = block;
@@ -317,6 +316,7 @@ struct Allocator {
                 owner = prev;
             }
 
+            // look for more blocks to coalesce
             while (true) {
                 Block* next = next_phys(owner);
                 if (!next || !next->is_free || next->mapped != owner->mapped) {
