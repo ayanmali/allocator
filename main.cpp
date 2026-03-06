@@ -340,6 +340,10 @@ int main() {
     Allocator allocator{};
     int* n = (int*) allocator.allocate(100 * sizeof(int));
 
+    //std::cout << "checking OOB: " << n[100] << "\n";
+
+    char* s = (char*) allocator.allocate(50 * sizeof(char));
+
     // testing
     for (int i = 0; i < 100; ++i) {
         n[i] = i;
@@ -347,9 +351,12 @@ int main() {
     for (int j = 0; j < 100; ++j) {
         std::cout << j << "\n";
     }
-    //std::cout << "checking OOB: " << n[100] << "\n";
 
-    char* s = (char*) allocator.allocate(50 * sizeof(char));
+    int8_t ok = allocator.deallocate(n);
+    if (ok != 0) {
+        std::cout << "error deallocating memory - int";
+    }
+
     std::string idk = "abcdefghijklmnopqrstuvwxyz";
     for (int k = 0; k < 50; ++k) {
         s[k] = idk[k % idk.size()];
@@ -358,12 +365,7 @@ int main() {
     for (int m = 0; m < 50; ++m) {
         std::cout << s[m] << "\n";
     }
-
-    int8_t ok = allocator.deallocate(n);
-    if (ok != 0) {
-        std::cout << "error deallocating memory - int";
-    }
-
+    
     ok = allocator.deallocate(s);
     if (ok != 0) {
         std::cout << "error deallocating memory - char";
