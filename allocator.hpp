@@ -82,7 +82,10 @@ struct Allocator {
                 }
                 while (curr) {
                     // look for the first free block that contains enough size to satisfy the request
-                    if (curr->is_free && curr->size >= size && curr != prev_search_end) {
+                    if (curr->is_free && curr->size >= size) {
+                        // curr is divided into a smaller block to match the requested size;
+                        // leftover space becomes its own block next in the list
+                        split(curr, size);
                         // pop the block off the free list
                         if (prev) {
                             prev->next = curr->next;
@@ -100,7 +103,7 @@ struct Allocator {
                         return curr->memory;
                     }
 
-                    // wrap around to start
+                    // if at the end of the list, wrap around to the start
                     if (prev_search_end && !curr->next) {
                         prev = nullptr;
                         curr = free_list;
@@ -108,6 +111,9 @@ struct Allocator {
                     }
                     prev = curr;
                     curr = curr->next;
+                    if (prev_search_end && curr == prev_search_end->next) {
+                        break;
+                    }
                 }
             }
 
@@ -383,8 +389,42 @@ struct Allocator {
         The original block will have a size of `partition`.
         The second, new block will have a size of `block->size - partition`
         */
-        Block* split(Block* block, size_t partition) {
+        bool split(Block* block, size_t partition) {
+            if (!block || partition > block->size) {
+                return false;
+            }
 
+            // Need enough room for a second block header/footer and at least 1 byte payload.
+            if (block->size < partition + overhead_size() + 1) {
+                return false;
+            }
+
+            const size_t original_size = block->size;
+            const bool original_mapped = block->mapped;
+            Block* old_next = block->next;
+
+            // Resize the front block to the requested partition.
+            block->size = partition;
+            write_footer(block);
+
+            // Place the remainder block immediately after the resized front block.
+            std::byte* remainder_addr = block_end(block);
+            Block* remainder = reinterpret_cast<Block*>(remainder_addr);
+            remainder->size = original_size - partition - overhead_size();
+            remainder->is_free = true;
+            remainder->mapped = original_mapped;
+            remainder->next = old_next;
+            write_footer(remainder);
+
+            // Keep list continuity through the original node (caller may unlink front block).
+            block->next = remainder;
+            available_bytes -= overhead_size();
+
+#ifndef NDEBUG
+            assert_header_footer_match(block);
+            assert_header_footer_match(remainder);
+#endif
+            return true;
         }
 
 };
