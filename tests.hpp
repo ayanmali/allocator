@@ -76,6 +76,6 @@ inline bool test2() {
 
     return true;
 
-} 
+}
 
 #endif
