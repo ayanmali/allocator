@@ -1,5 +1,8 @@
-#ifndef ALLOCATOR
-#define ALLOCATOR
+/*
+Central free list
+*/
+#ifndef FREE_LIST
+#define FREE_LIST
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -10,7 +13,7 @@
 #include <cassert>
 #include <iostream>
 
-static constexpr size_t MMAP_THRESHOLD = 400;
+#include "config.hpp"
 
 struct Block {
     // Block header
@@ -42,16 +45,16 @@ static constexpr size_t overhead_size() {
 
 struct Allocator {
     public:
-#ifndef NDEBUG
-        struct AllocateTrace {
-            bool started_from_prev_search_end = false;
-            bool wrapped_to_head = false;
-            size_t visited_nodes = 0;
-            Block* selected_block = nullptr;
-            Block* prev_search_end_before = nullptr;
-            Block* prev_search_end_after = nullptr;
-        };
-#endif
+// #ifndef NDEBUG
+//         struct AllocateTrace {
+//             bool started_from_prev_search_end = false;
+//             bool wrapped_to_head = false;
+//             size_t visited_nodes = 0;
+//             Block* selected_block = nullptr;
+//             Block* prev_search_end_before = nullptr;
+//             Block* prev_search_end_after = nullptr;
+//         };
+// #endif
         Allocator() {
             Block* start_block = create_block(
                 INITIAL_CHUNK, 
@@ -74,59 +77,59 @@ struct Allocator {
                 deallocate(free_list);
             }
         }
-#ifndef NDEBUG
-        // Debug helpers used by tests.
-        Block* debug_free_list_head() const {
-            return free_list;
-        }
+// #ifndef NDEBUG
+//         // Debug helpers used by tests.
+//         Block* debug_free_list_head() const {
+//             return free_list;
+//         }
 
-        Block* debug_prev_search_end() const {
-            return prev_search_end;
-        }
+//         Block* debug_prev_search_end() const {
+//             return prev_search_end;
+//         }
 
-        AllocateTrace debug_last_allocate_trace() const {
-            return last_allocate_trace;
-        }
-#endif
+//         AllocateTrace debug_last_allocate_trace() const {
+//             return last_allocate_trace;
+//         }
+// #endif
         void* allocate(const size_t size) {
-#ifndef NDEBUG
-            last_allocate_trace = {};
-            last_allocate_trace.prev_search_end_before = prev_search_end;
+// #ifndef NDEBUG
+//             last_allocate_trace = {};
+//             last_allocate_trace.prev_search_end_before = prev_search_end;
 
-            std::cout << "[allocate] request size=" << size
-                      << ", available_bytes=" << available_bytes << "\n";
-#endif
+//             std::cout << "[allocate] request size=" << size
+//                       << ", available_bytes=" << available_bytes << "\n";
+// #endif
             // traverse the free list to find a free block that contains enough size to satisfy the request
             if (size <= available_bytes) {
                 Block* prev;
                 Block* curr;
                 // start searching from where the last search ended
                 if (prev_search_end && prev_search_end->next) {
-#ifndef NDEBUG
-                    last_allocate_trace.started_from_prev_search_end = true;
-                    std::cout << "[allocate] starting from previous search tail\n";
-#endif
+// #ifndef NDEBUG
+//                     last_allocate_trace.started_from_prev_search_end = true;
+//                     std::cout << "[allocate] starting from previous search tail\n";
+// #endif
                     prev = prev_search_end;
                     curr = prev_search_end->next;
                 }
                 else {
                     // start searching from start of list
-#ifndef NDEBUG
-                    std::cout << "[allocate] starting from free-list head\n";
-#endif
+// #ifndef NDEBUG
+//                     std::cout << "[allocate] starting from free-list head\n";
+// #endif
                     prev = nullptr;
                     curr = free_list;
                 }
                 while (curr) {
-#ifndef NDEBUG
-                    ++last_allocate_trace.visited_nodes;
-#endif
+// #ifndef NDEBUG
+//                     ++last_allocate_trace.visited_nodes;
+// #endif
                     // look for the first free block that contains enough size to satisfy the request
                     if (curr->is_free && curr->size >= size) {
-#ifndef NDEBUG
-                        std::cout << "[allocate] reusing free block @ " << curr
-                                  << " (block size=" << curr->size << ")\n";
-#endif
+// #ifndef NDEBUG
+//                         std::cout << "[allocate] reusing free block @ " << curr
+//                                   << " (block size=" << curr->size << ")\n";
+// #endif
                         // curr is divided into a smaller block to match the requested size;
                         // leftover space becomes its own block next in the list
                         split(curr, size);
@@ -141,22 +144,22 @@ struct Allocator {
                         curr->next = nullptr;
                         curr->is_free = false;
                         available_bytes -= curr->size;
- #ifndef NDEBUG
-                        last_allocate_trace.selected_block = curr;
-                        last_allocate_trace.prev_search_end_after = prev_search_end;
-                        std::cout << "[allocate] returning block @ " << curr
-                                  << ", remaining available_bytes=" << available_bytes << "\n";
+//  #ifndef NDEBUG
+//                         last_allocate_trace.selected_block = curr;
+//                         last_allocate_trace.prev_search_end_after = prev_search_end;
+//                         std::cout << "[allocate] returning block @ " << curr
+//                                   << ", remaining available_bytes=" << available_bytes << "\n";
 
-                        assert_header_footer_match(curr);
-#endif
+//                         assert_header_footer_match(curr);
+// #endif
                         return curr->memory;
                     }
 
                     // if at the end of the list, wrap around to the start
                     if (prev_search_end && !curr->next) {
-#ifndef NDEBUG
-                        last_allocate_trace.wrapped_to_head = true;
-#endif
+// #ifndef NDEBUG
+//                         last_allocate_trace.wrapped_to_head = true;
+// #endif
                         prev = nullptr;
                         curr = free_list;
                         continue;
@@ -180,14 +183,14 @@ struct Allocator {
             if (!new_block) {
                 return (void*)-1;
             }
-#ifndef NDEBUG
-            last_allocate_trace.prev_search_end_after = prev_search_end;
-            std::cout << "[allocate] created new block @ " << new_block
-                      << ", mapped=" << new_block->mapped
-                      << ", size=" << new_block->size << "\n";
+// #ifndef NDEBUG
+//             last_allocate_trace.prev_search_end_after = prev_search_end;
+//             std::cout << "[allocate] created new block @ " << new_block
+//                       << ", mapped=" << new_block->mapped
+//                       << ", size=" << new_block->size << "\n";
 
-            assert_header_footer_match(new_block);
-#endif
+//             assert_header_footer_match(new_block);
+// #endif
             return new_block->memory;
         }
 
@@ -204,10 +207,10 @@ struct Allocator {
             if (!block || block->is_free) {
                 return false;
             }
-#ifndef NDEBUG
-            std::cout << "[return_back] returning block @ " << block
-                      << " (size=" << block->size << ") to free list\n";
-#endif
+// #ifndef NDEBUG
+//             std::cout << "[return_back] returning block @ " << block
+//                       << " (size=" << block->size << ") to free list\n";
+// #endif
             block->is_free = true;
             block->next = nullptr;
             available_bytes += block->size;
@@ -215,17 +218,17 @@ struct Allocator {
             Block* merged = coalesce_around(block);
             if (merged == block) {
                 insert_free(block);
-#ifndef NDEBUG
-                std::cout << "[return_back] inserted block @ " << block
-                          << " at free-list head\n";
-            } else {
-                std::cout << "[return_back] coalesced into owner block @ " << merged << "\n";
-#endif
+// #ifndef NDEBUG
+//                 std::cout << "[return_back] inserted block @ " << block
+//                           << " at free-list head\n";
+//             } else {
+//                 std::cout << "[return_back] coalesced into owner block @ " << merged << "\n";
+// #endif
             }
 
-#ifndef NDEBUG
-            assert_header_footer_match(merged);
-#endif
+// #ifndef NDEBUG
+//             assert_header_footer_match(merged);
+// #endif
 
             return true;
         }
@@ -288,9 +291,9 @@ struct Allocator {
         size_t available_bytes;
         std::byte* brk_heap_start = nullptr;
         std::byte* brk_heap_end = nullptr;
-#ifndef NDEBUG
-        AllocateTrace last_allocate_trace{};
-#endif
+// #ifndef NDEBUG
+//         AllocateTrace last_allocate_trace{};
+// #endif
 
         static size_t block_span(const Block* block) {
             return overhead_size() + block->size;
@@ -311,13 +314,13 @@ struct Allocator {
             footer->mapped = block->mapped;
         }
 
-#ifndef NDEBUG
-        static void assert_header_footer_match(Block* block) {
-            Footer* footer = footer_of(block);
-            assert(footer->size == block->size);
-            assert(footer->mapped == block->mapped);
-        }
-#endif
+// #ifndef NDEBUG
+//         static void assert_header_footer_match(Block* block) {
+//             Footer* footer = footer_of(block);
+//             assert(footer->size == block->size);
+//             assert(footer->mapped == block->mapped);
+//         }
+// #endif
 
         Block* next_phys(Block* block) const {
             if (!block || block->mapped) {
@@ -379,9 +382,9 @@ struct Allocator {
 
             curr->is_free = false;
             curr->next = nullptr;
-#ifndef NDEBUG
-            std::cout << "[unlink_free] removed block @ " << curr << " from free list\n";
-#endif            
+// #ifndef NDEBUG
+//             std::cout << "[unlink_free] removed block @ " << curr << " from free list\n";
+// #endif            
             return true;
         }
 
@@ -406,12 +409,12 @@ struct Allocator {
             block->mapped = mapped;
             block->next = next;
             write_footer(block);
-#ifndef NDEBUG
-            std::cout << "[create_block] block @ " << block
-                      << " size=" << size
-                      << " mapped=" << mapped
-                      << " is_free=" << is_free << "\n";
-#endif
+// #ifndef NDEBUG
+//             std::cout << "[create_block] block @ " << block
+//                       << " size=" << size
+//                       << " mapped=" << mapped
+//                       << " is_free=" << is_free << "\n";
+// #endif
             if (!mapped) {
                 if (!brk_heap_start) {
                     brk_heap_start = reinterpret_cast<std::byte*>(block);
@@ -419,9 +422,9 @@ struct Allocator {
                 brk_heap_end = block_end(block);
             }
 
-#ifndef NDEBUG
-            assert_header_footer_match(block);
-#endif
+// #ifndef NDEBUG
+//             assert_header_footer_match(block);
+// #endif
             return block;
         }
 
@@ -433,10 +436,10 @@ struct Allocator {
             Block* owner = block;
             Block* prev = prev_phys(block);
             if (prev && prev->is_free && prev->mapped == block->mapped) {
-#ifndef NDEBUG
-                std::cout << "[coalesce] merging with previous block @ " << prev
-                          << " + block @ " << block << "\n";
-#endif
+// #ifndef NDEBUG
+//                 std::cout << "[coalesce] merging with previous block @ " << prev
+//                           << " + block @ " << block << "\n";
+// #endif
                 prev->size += overhead_size() + block->size;
                 write_footer(prev);
                 available_bytes += overhead_size();
@@ -449,19 +452,19 @@ struct Allocator {
                 if (!next || !next->is_free || next->mapped != owner->mapped) {
                     break;
                 }
-#ifndef NDEBUG
-                std::cout << "[coalesce] merging owner @ " << owner
-                          << " with next block @ " << next << "\n";
-#endif
+// #ifndef NDEBUG
+//                 std::cout << "[coalesce] merging owner @ " << owner
+//                           << " with next block @ " << next << "\n";
+// #endif
                 unlink_free(next);
                 owner->size += overhead_size() + next->size;
                 write_footer(owner);
                 available_bytes += overhead_size();
             }
 
-#ifndef NDEBUG
-            assert_header_footer_match(owner);
-#endif
+// #ifndef NDEBUG
+//             assert_header_footer_match(owner);
+// #endif
             return owner;
         }
 
@@ -501,15 +504,15 @@ struct Allocator {
             block->next = remainder;
             available_bytes -= overhead_size();
 
-#ifndef NDEBUG
-            std::cout << "[split] split block @ " << block
-                      << " into front size=" << block->size
-                      << " and remainder @ " << remainder
-                      << " size=" << remainder->size << "\n";
+// #ifndef NDEBUG
+//             std::cout << "[split] split block @ " << block
+//                       << " into front size=" << block->size
+//                       << " and remainder @ " << remainder
+//                       << " size=" << remainder->size << "\n";
 
-            assert_header_footer_match(block);
-            assert_header_footer_match(remainder);
-#endif
+//             assert_header_footer_match(block);
+//             assert_header_footer_match(remainder);
+// #endif
             return true;
         }
 

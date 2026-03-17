@@ -5,7 +5,9 @@ A memory allocator implementation in C++.
 
 - remove branches; replace w/ templates
 
-- thread-local caches
+- use `madvise` with `MADV_DONTNEED` and/or `MADV_FREE`
+
+- thread-local/CPU caches
 
 - separate free lists based on size (i.e. different bins)
 
