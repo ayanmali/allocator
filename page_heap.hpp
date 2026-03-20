@@ -18,6 +18,7 @@ E.g. 1 MB / 8 KB = 128 pages - page heap allocates a 128-page span.
 Spans are provided on a best-fit basis.
 Spans are split accordingly so that any extra pages not used for
 allocations are sent to the free lists.
+
 */
 
 #ifndef PAGE_HEAP
@@ -40,9 +41,7 @@ allocations are sent to the free lists.
 
 struct PageHeap {
     public:
-        PageHeap() {
-            
-        }
+        PageHeap() = default;
         Span* allocate_span(uint32_t num_pages, uint32_t size_class) {
             if (num_pages > MAX_PAGES) {
                 return nullptr;
@@ -51,6 +50,7 @@ struct PageHeap {
             search the corresponding free list
             check each free list, starting with the one whose span page size equals `num_pages`
             if 
+            look for the block whose size class most closely matches the `size_class` argument
             */
             for (int i = num_pages - 1; i < MAX_PAGES + 1; ++i) {
                 // check the next free list if the current one does not have any spans
@@ -59,7 +59,25 @@ struct PageHeap {
                 }
                 // once a free list w/ a suitable span has been found,
                 // remove that span from its list and return it
-                Span* start = free_lists[i];
+                // check every span in the current free list
+                Span* prev;
+                Span* curr = free_lists[i];
+                uint32_t best_diff = PAGE_SIZE; // some arbitrarily large number
+                Span* best_span;
+                // search the free list for the best-fitting span (based on size class)
+                while (curr) {
+                    // if we found an exact match, use that span. Otherwise, keep looking
+                    if (curr->size_class == size_class) {
+                        best_span = curr;
+                        break;
+                    }
+                    else if (std::abs(curr->size_class - size_class) < best_diff) {
+                        best_span = curr; 
+                    }
+                    prev = curr;
+                    curr = curr->next;
+                }
+                // TODO: take the size class into account
                 free_lists[i] = start->next;
                 start->next = nullptr;
                 // TODO: split the span and add the leftover pages to a new span in the corresponding list
@@ -100,6 +118,7 @@ struct PageHeap {
             }
             Span* prev = nullptr;
             while (curr) {
+                // compare memory addresses and insert the span in sorted order
                 if (span < curr) {
                     if (prev) {
                         prev->next = span;
