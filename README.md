@@ -1,6 +1,8 @@
 A memory allocator implementation in C++.
 
 ### TODO
+- have the middle-end move memory to and from the page heap rather than requesting directly from OS
+
 - moving slowpath code (e.g. error handling) to non-inlined functions
 
 - remove branches; replace w/ templates
