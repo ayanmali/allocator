@@ -59,4 +59,7 @@ static constexpr SizeClassInfo SizeClasses[] = {
   {204800,   25,    2}, 
   {262144,   32,    2}
 };
+
+static constexpr uint32_t NUM_SIZE_CLASSES = sizeof(SizeClasses) / sizeof(SizeClasses[0]);
+
 #endif

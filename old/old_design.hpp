@@ -13,7 +13,7 @@ Central free list
 #include <cassert>
 #include <iostream>
 
-#include "config.hpp"
+#include "../config.hpp"
 
 struct Block {
     // Block header

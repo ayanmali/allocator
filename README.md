@@ -1,7 +1,20 @@
 A memory allocator implementation in C++.
 
 ### TODO
-- have the middle-end move memory to and from the page heap rather than requesting directly from OS
+- Batch Transfer in the central free lists (num_to_move)
+  The sc_info.num_to_move field specifies how many objects to move at once between a thread cache and the CFL. This is a future optimization for when thread caches are added -- the CFL would expose fetch_batch(FreeObject** list, uint32_t count) and return_batch(FreeObject* list, uint32_t count) methods.
+
+- locking on the page heap
+
+- replace page map with a radix tree or cache friendly hash table
+
+- update struct member ordering
+
+- replace Span.total_count and Span.allocated_count with a bitmask instead of two ints
+
+- copy/move ctors
+
+- how to handle small allocations?
 
 - moving slowpath code (e.g. error handling) to non-inlined functions
 
@@ -11,17 +24,14 @@ A memory allocator implementation in C++.
 
 - thread-local/CPU caches
 
-- separate free lists based on size (i.e. different bins)
-
 - freeing memory from a separate thread?
 
 ### Added
-Block splitting and coalescing
-Central free list - linked list of free blocks
-returning blocks back to (the start of) the free list
+Span splitting and coalescing
+Central free lists - linked lists of free blocks, organized by size class (see `config.hpp`)
+Returning blocks back to (the start of) the free list
   start of list vs based on address order; tradeoff between speed and fragmentation
-next-fit allocation strategy
-  uses a pointer to keep track of where the last search ended to avoid scanning unhelpful blocks
+Each Span maintains its own free list to allow for releasing of Spans back to the page heap in O(1) 
+Each CFL uses a pointer to keep track of a Span with free objects to allow for O(1) allocation from the page heap
 memory allocation via sbrk and mmap
 sbrk and mmap-specific deallocation logic
-boundary tags for easier pointer arithmetic to find the previous block and easier coalescing

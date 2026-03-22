@@ -31,11 +31,16 @@ size class 0 corresponds to large allocations. Spans with this size class dont n
 #include <unordered_map>
 #include <sys/mman.h>
 
+struct FreeObject;
+
 struct Span {
     uintptr_t start;      // page ID (address / PAGE_SIZE)
     uintptr_t num_pages;
     uint32_t size_class;
     bool is_free;
+    uint32_t total_objects;     // objects carved from this span (set by CentralFreeList)
+    FreeObject* free_objects;   // per-span embedded free list of available objects
+    uint32_t num_free_objects;  // count of objects currently in this span's free list
     Span* next;
     Span* prev;
 };
@@ -98,7 +103,6 @@ struct PageHeap {
                 if (best_span->num_pages > num_pages) {
                     split(best_span, num_pages);
                 }
-                // TODO: split span into objects of size `size_class` and return them rather than the raw span
                 return best_span;
             }
 
@@ -155,6 +159,11 @@ struct PageHeap {
             insert(span->num_pages, span);
         }
 
+        Span* span_for(void* ptr) {
+            uintptr_t page_id = reinterpret_cast<uintptr_t>(ptr) / PAGE_SIZE;
+            return lookup(page_id);
+        }
+
         bool deallocate_span(Span* span) {
             if (!span) return false;
 
@@ -177,18 +186,17 @@ struct PageHeap {
 
         // ---- page map helpers ----
 
-        // map the first and last pages to each span
+        // Map every page in the span so that span_for() can resolve
+        // any address within the span, not just the boundaries.
         void register_span(Span* span) {
-            page_map[span->start] = span;
-            if (span->num_pages > 1) {
-                page_map[span->start + span->num_pages - 1] = span;
+            for (uintptr_t p = 0; p < span->num_pages; ++p) {
+                page_map[span->start + p] = span;
             }
         }
 
         void unregister_span(Span* span) {
-            page_map.erase(span->start);
-            if (span->num_pages > 1) {
-                page_map.erase(span->start + span->num_pages - 1);
+            for (uintptr_t p = 0; p < span->num_pages; ++p) {
+                page_map.erase(span->start + p);
             }
         }
 
