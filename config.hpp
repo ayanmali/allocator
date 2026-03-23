@@ -6,6 +6,8 @@ static constexpr uint32_t  PAGE_SIZE = 8000; // 8 KB page size
 
 static constexpr uint32_t MAX_PAGES = 255;
 
+static constexpr uint32_t TRANSFER_CACHE_CAPACITY = 100;
+
 // static constexpr size_t MMAP_THRESHOLD = 256000;
 static constexpr uint32_t  MMAP_THRESHOLD = 400;
 

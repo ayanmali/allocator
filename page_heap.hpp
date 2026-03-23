@@ -31,7 +31,7 @@ size class 0 corresponds to large allocations. Spans with this size class dont n
 #include <unordered_map>
 #include <sys/mman.h>
 
-struct FreeObject;
+static constexpr uint16_t INVALID_INDEX = 0xFFFF;
 
 struct Span {
     uintptr_t start;      // page ID (address / PAGE_SIZE)
@@ -39,7 +39,7 @@ struct Span {
     uint32_t size_class;
     bool is_free;
     uint32_t total_objects;     // objects carved from this span (set by CentralFreeList)
-    FreeObject* free_objects;   // per-span embedded free list of available objects
+    uint16_t freelist_head = INVALID_INDEX; // index of first packed batch node
     uint32_t num_free_objects;  // count of objects currently in this span's free list
     Span* next;
     Span* prev;

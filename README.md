@@ -4,7 +4,13 @@ A memory allocator implementation in C++.
 - Batch Transfer in the central free lists (num_to_move)
   The sc_info.num_to_move field specifies how many objects to move at once between a thread cache and the CFL. This is a future optimization for when thread caches are added -- the CFL would expose fetch_batch(FreeObject** list, uint32_t count) and return_batch(FreeObject* list, uint32_t count) methods.
 
-- locking on the page heap
+- dynamic resizing of transfer cache capacity
+
+- storing 16 bit free object indexes inside spans to pack indexes together
+  - unrolled linked list --> handles tiny allocations
+
+- locking on the page heap, central free lists, and transfer cache
+  - lock free approach?
 
 - replace page map with a radix tree or cache friendly hash table
 
@@ -14,8 +20,6 @@ A memory allocator implementation in C++.
 
 - copy/move ctors
 
-- how to handle small allocations?
-
 - moving slowpath code (e.g. error handling) to non-inlined functions
 
 - remove branches; replace w/ templates
@@ -23,6 +27,8 @@ A memory allocator implementation in C++.
 - use `madvise` with `MADV_DONTNEED` and/or `MADV_FREE`
 
 - thread-local/CPU caches
+
+- better security - protection from buffer overflows, etc
 
 - freeing memory from a separate thread?
 

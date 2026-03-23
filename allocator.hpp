@@ -14,4 +14,6 @@ struct Allocator {
             CentralFreeList(sc)
         }
     }
-}
+
+    void init_thread_cache() {};
+};
