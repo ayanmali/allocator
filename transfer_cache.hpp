@@ -10,7 +10,8 @@ If the transfer cache doesn't have enough space --> put it into the central free
 
 
 */
-
+#ifndef TRANSFER_CACHE
+#define TRANSFER_CACHE
 #include "central_free_list.hpp"
 #include <span>
 
@@ -23,11 +24,10 @@ struct Batch {
 ring buffer
 template parameter N represents the number of batches this transfer cache can hold.
 */
-template <size_t N>
 struct TransferCache {
-    std::array<Batch, N> buffer;
     uint32_t read_idx;
     uint32_t write_idx;
+    Batch buffer[];
 
     TransferCache() : buffer(nullptr), read_idx(0), write_idx(0) {
     }
@@ -51,3 +51,4 @@ struct TransferCache {
     }
 
 };
+#endif

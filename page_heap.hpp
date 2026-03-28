@@ -19,8 +19,6 @@ Spans are provided on a best-fit basis.
 Spans are split accordingly so that any extra pages not used for
 allocations are sent to the free lists.
 
-size class 0 corresponds to large allocations. Spans with this size class dont need to be split.
-
 */
 
 #ifndef PAGE_HEAP

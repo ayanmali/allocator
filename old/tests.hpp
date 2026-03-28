@@ -1,6 +1,6 @@
 #ifndef TESTS
 #define TESTS
-#include "free_list.hpp"
+#include "old_design.hpp"
 
 inline bool test1() {
     Allocator allocator{};
