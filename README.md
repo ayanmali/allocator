@@ -8,6 +8,8 @@ A memory allocator implementation in C++.
 
 - dynamic resizing of transfer cache capacity
 
+- function inlining/no inlining
+
 - locking on the page heap, central free lists, and transfer cache
   - lock free approach?
 

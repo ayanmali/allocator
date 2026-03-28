@@ -12,65 +12,6 @@ static constexpr uint32_t TRANSFER_CACHE_CAPACITY = 100;
 // static constexpr size_t MMAP_THRESHOLD = 256000;
 static constexpr uint32_t  MMAP_THRESHOLD = 400;
 
-// {size, pages, batch_size, byte_budget}
-// byte_budget: max bytes of object memory cached per CPU for this class.
-// Smaller classes get higher budgets (more pointer slots) since they are
-// allocated most frequently.  The slab offset computation scales these
-// down proportionally if the total exceeds PER_CPU_SLAB_SIZE.
-static constexpr SizeClassInfo SizeClasses[] = {
-  //   size  pg  batch  budget
-  {      0,   0,    0,      0},  // large allocs bypass the slab
-  {      8,   1,   32,  64000},  // ── tiny (8-64 B) ──
-  {     16,   1,   32,  64000},
-  {     32,   1,   32,  64000},
-  {     64,   1,   32,  64000},
-  {     80,   1,   32,  32000},  // ── small (80-256 B) ──
-  {     96,   1,   32,  32000},
-  {    112,   1,   32,  32000},
-  {    128,   1,   32,  32000},
-  {    160,   1,   32,  32000},
-  {    176,   1,   32,  32000},
-  {    208,   1,   32,  32000},
-  {    256,   1,   32,  32000},
-  {    312,   1,   32,  16000},  // ── medium (312-1024 B) ──
-  {    384,   1,   32,  16000},
-  {    448,   1,   32,  16000},
-  {    512,   1,   32,  16000},
-  {    576,   1,   32,  16000},
-  {    704,   1,   32,  16000},
-  {    896,   1,   32,  16000},
-  {   1024,   1,   32,  16000},
-  {   1152,   2,   32,   8000},  // ── large (1152-4096 B) ──
-  {   1408,   2,   32,   8000},
-  {   1792,   2,   32,   8000},
-  {   2048,   2,   32,   8000},
-  {   2688,   2,   24,   8000},
-  {   3456,   3,   18,   8000},
-  {   4096,   1,   16,   8000},
-  {   4736,   3,   13,   4000},  // ── xl (4736-16384 B) ──
-  {   6144,   3,   10,   4000},
-  {   8192,   1,    8,   4000},
-  {   9472,   5,    6,   4000},
-  {  12288,   3,    5,   4000},
-  {  16384,   2,    4,   4000},
-  {  20480,   5,    3,   2000},  // ── xxl (20480+ B) ──
-  {  28672,   7,    2,   2000},
-  {  32768,   4,    2,   2000},
-  {  40960,   5,    2,   2000},
-  {  49152,   6,    2,   2000},
-  {  65536,   8,    2,   2000},
-  {  73728,   9,    2,   2000},
-  {  81920,  10,    2,   2000},
-  {  98304,  12,    2,   2000},
-  { 114688,  14,    2,   2000},
-  { 131072,  16,    2,   2000},
-  { 155648,  19,    2,   2000},
-  { 204800,  25,    2,   2000},
-  { 262144,  32,    2,   2000}
-};
-
-static constexpr uint32_t NUM_SIZE_CLASSES = sizeof(SizeClasses) / sizeof(SizeClasses[0]);
-
 static constexpr uint32_t PER_CPU_SLAB_SIZE = 20000;
 
 // Each size class's pointer array capacity is derived from its byte_budget:

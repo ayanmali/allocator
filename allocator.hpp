@@ -9,6 +9,11 @@ i.e., it should only be created once it is explicitly requested.
 
 struct of arrays pattern
 */
+#include "central_free_list.hpp"
+#include "page_heap.hpp"
+#include "slabs.hpp"
+#include "transfer_cache.hpp"
+
 struct Allocator {
     public:
         Allocator() {

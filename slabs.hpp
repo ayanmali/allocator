@@ -2,6 +2,7 @@
 #define SLABS
 #include "config.hpp"
 #include "size_classes.hpp"
+#include <sched.h>
 
 /*
 One slab per each CPU
@@ -11,62 +12,76 @@ Each pointer array's capacity should be a multiple of the corresponding size cla
 
 */
 
+extern "C" {
+    extern ptrdiff_t __rseq_offset;
+    extern unsigned int __rseq_size;
+}
+
 struct SlabHeader {
     uint16_t current; // points to next valid slot
     uint16_t end; // one past the last valid slot
 };
 
 /*
-N separate slabs, one for each logical CPU
+Each slab represents a cache corresponding to one logical CPU.
 Each slab contains an array of pointers, which is packed to contain pointers to objects across all size classes 
 */
 struct Slab {
     public:
-        Slab(uint32_t slab_base) {
+        Slab() {
             // set the current and end indices for each header
-            for (int i = 0; i < NUM_SIZE_CLASSES; ++i) {
-                headers[i].current = get_begin(slab_base, i) + 1;
-                headers[i].end = SIZE_CLASS_OFFSETS[i];
-                ++i;     
+            for (uint32_t i = 0; i < NUM_SIZE_CLASSES; ++i) {
+                headers[i].current = SIZE_CLASS_OFFSETS[i];
+                headers[i].end = SIZE_CLASS_OFFSETS[i + 1];
             }
         }
 
         /*
         Popping from the stack
+        TODO: implement prefetching?
         */
-        void* allocate(Slab& slab, size_t size) {
-            auto cpu = get_current_cpu_id();
-            auto size_class = round_size_class(size);
-            auto size_class_idx = size_class_to_idx(size_class);
-            auto begin = get_begin(slab_base, size_class_idx);
-            if (current > begin) {
-                current--;
-                // return the object at the current index
+        void* allocate(uint32_t size_class_idx) {
+            auto& hdr = headers[size_class_idx];
+            auto begin = SIZE_CLASS_OFFSETS[size_class_idx];
+            if (hdr.current > SIZE_CLASS_OFFSETS[size_class_idx]) {
+                auto idx = hdr.current - 1;
+                auto ptr = pointers[idx];
+                hdr.current = idx; // rseq commit operation
+                return ptr;
             }
             return nullptr;
-
         }
         
         /*
         Pushing onto the stack
         */
-        bool deallocate(Slab& slab, void* mem) {
-            auto cpu = get_current_cpu_id();
-            if (current < end) {
-                current++;
+        bool deallocate(void* mem, uint32_t size_class_idx) {
+            auto& hdr = headers[size_class_idx];
+            if (hdr.current < hdr.end) {
+                auto idx = hdr.current + 1;
+                // attempt to push onto stack; if full, return false
+                pointers[idx] = mem;
+                hdr.current++;
                 return true;
             }
             return false;
         }
 
-        static uint32_t get_begin(uint32_t slab_base, uint32_t size_class_idx) {
-            return slab_base + SIZE_CLASS_OFFSETS[size_class_idx];
+        static uint32_t get_begin(uint32_t size_class_idx) {
+            return SIZE_CLASS_OFFSETS[size_class_idx];
         }
 
         /*
         Determines which slab to access (i.e. the index into the slabs array)
         */
         static int get_current_cpu_id() {
+            if (__builtin_expect(__rseq_size >= 4, 1)) {
+
+                auto* rs = reinterpret_cast<unsigned*>(
+                    reinterpret_cast<char*>(__builtin_thread_pointer()) + __rseq_offset);
+                return static_cast<int>(*rs);  // cpu_id is the first 32-bit field
+            }
+            return sched_getcpu(); // fallback
         }
 
     private:
