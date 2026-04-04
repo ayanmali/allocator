@@ -2,7 +2,6 @@
 #define SLABS
 #include "config.hpp"
 #include "size_classes.hpp"
-#include <sched.h>
 
 /*
 One slab per each CPU
@@ -11,11 +10,6 @@ After the last header comes the first pointer array for the first size class.
 Each pointer array's capacity should be a multiple of the corresponding size class's batch size
 
 */
-
-extern "C" {
-    extern ptrdiff_t __rseq_offset;
-    extern unsigned int __rseq_size;
-}
 
 struct SlabHeader {
     uint16_t current; // points to next valid slot
@@ -93,19 +87,6 @@ struct Slab {
 
         static uint32_t get_begin(uint32_t size_class_idx) {
             return SIZE_CLASS_OFFSETS[size_class_idx];
-        }
-
-        /*
-        Determines which slab to access (i.e. the index into the slabs array)
-        */
-        static int get_current_cpu_id() {
-            if (__builtin_expect(__rseq_size >= 4, 1)) {
-
-                auto* rs = reinterpret_cast<unsigned*>(
-                    reinterpret_cast<char*>(__builtin_thread_pointer()) + __rseq_offset);
-                return static_cast<int>(*rs);  // cpu_id is the first 32-bit field
-            }
-            return sched_getcpu(); // fallback
         }
 
     private:

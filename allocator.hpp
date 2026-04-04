@@ -12,6 +12,7 @@ struct of arrays pattern
 #include <thread>
 #include "central_free_list.hpp"
 #include "page_heap.hpp"
+#include "rseq_ops.hpp"
 #include "size_classes.hpp"
 #include "slabs.hpp"
 #include "transfer_cache.hpp"
@@ -19,6 +20,8 @@ struct of arrays pattern
 struct Allocator {
     public:
         Allocator() {
+            // initialize each CFL
+            // ...
             const auto num_cpus = std::thread::hardware_concurrency();
             void* per_cpu_region = mmap();
             // split the region into Slabs (one per logical CPU)
@@ -33,11 +36,12 @@ struct Allocator {
                 return nullptr;
             }
 
-            Slab* slab = per_cpu_caches[Slab::get_current_cpu_id()];
-
-            void* ptr = slab->allocate(sc_idx);
+            uint32_t begin = Slab::get_begin(sc_idx);
+            void* ptr = slab_pop(per_cpu_caches, sc_idx, begin);
             if (ptr) return ptr;
 
+            auto cpu_id = static_cast<uint8_t>(*get_rseq_ptr());
+            Slab* slab = per_cpu_caches[cpu_id];
             void** dest = slab->push_destination(sc_idx);
             uint32_t got = transfer_caches[sc_idx].RemoveRange(dest, sc.batch_size);
 
@@ -46,7 +50,7 @@ struct Allocator {
             }
             if (got > 0) {
                 slab->commit_push(sc_idx, got);
-                return slab->allocate(sc_idx);
+                return slab_pop(per_cpu_caches, sc_idx, begin);
             }
 
             return nullptr;
@@ -62,10 +66,10 @@ struct Allocator {
                 return;
             }
 
-            Slab* slab = per_cpu_caches[Slab::get_current_cpu_id()];
+            if (slab_push(per_cpu_caches, sc_idx, mem)) return;
 
-            if (slab->deallocate(mem, sc_idx)) return;
-
+            auto cpu_id = static_cast<uint8_t>(*get_rseq_ptr());
+            Slab* slab = per_cpu_caches[cpu_id];
             uint32_t n = sc.batch_size;
             void** src = slab->pop_source(sc_idx, n);
 
@@ -75,7 +79,7 @@ struct Allocator {
             }
 
             slab->commit_pop(sc_idx, n);
-            slab->deallocate(mem, sc_idx);
+            slab_push(per_cpu_caches, sc_idx, mem);
         }
 
     private:
