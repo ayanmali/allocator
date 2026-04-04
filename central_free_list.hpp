@@ -61,12 +61,12 @@ An instance of a CentralFreeList corresponds to one size class.
 struct CentralFreeList {
     public:
         CentralFreeList()
-            : sc_info(), num_free(0), span_list(nullptr),
-              current_span(nullptr), page_heap(nullptr) {}
+            : page_heap(nullptr), span_list(nullptr), current_span(nullptr),
+              size(0), num_free(0), pages(0) {}
 
-        CentralFreeList(SizeClassInfo& sc, PageHeap* ph)
-            : sc_info(sc), num_free(0), span_list(nullptr),
-              current_span(nullptr), page_heap(ph) {}
+        CentralFreeList(PageHeap* ph, uint32_t size, uint8_t pages)
+            : page_heap(ph), span_list(nullptr), current_span(nullptr),
+              size(size), num_free(0), pages(pages) {}
 
         ~CentralFreeList() {
             Span* curr = span_list;
@@ -99,13 +99,13 @@ struct CentralFreeList {
             auto* base = reinterpret_cast<std::byte*>(
                 current_span->start * PAGE_SIZE);
             auto* node = static_cast<PackedNode*>(
-                index_to_ptr(current_span->freelist_head, base, sc_info.size));
+                index_to_ptr(current_span->freelist_head, base, size));
 
             void* result;
             if (node->count > 0) {
                 uint16_t* slots = packed_indexes(node);
                 uint16_t idx = slots[--node->count];
-                result = index_to_ptr(idx, base, sc_info.size);
+                result = index_to_ptr(idx, base, size);
             } else {
                 result = node;
                 current_span->freelist_head = node->next_idx;
@@ -122,12 +122,12 @@ struct CentralFreeList {
             if (!span) return;
 
             auto* base = reinterpret_cast<std::byte*>(span->start * PAGE_SIZE);
-            uint16_t freed_idx = ptr_to_index(ptr, base, sc_info.size);
+            uint16_t freed_idx = ptr_to_index(ptr, base, size);
 
             if (span->freelist_head != INVALID_INDEX) {
                 auto* head = static_cast<PackedNode*>(
-                    index_to_ptr(span->freelist_head, base, sc_info.size));
-                uint16_t cap = pack_capacity(sc_info.size);
+                    index_to_ptr(span->freelist_head, base, size));
+                uint16_t cap = pack_capacity(size);
                 if (head->count < cap) {
                     packed_indexes(head)[head->count++] = freed_idx;
                     ++span->num_free_objects;
@@ -149,12 +149,29 @@ struct CentralFreeList {
 
         uint32_t get_num_free() const { return num_free; }
 
+        uint32_t allocate_batch(void** ptrs, uint32_t count) {
+            uint32_t allocated = 0;
+            while (allocated < count) {
+                void* p = allocate();
+                if (!p) break;
+                ptrs[allocated++] = p;
+            }
+            return allocated;
+        }
+
+        void deallocate_batch(void** ptrs, uint32_t count) {
+            for (uint32_t i = 0; i < count; ++i) {
+                deallocate(ptrs[i]);
+            }
+        }
+
     private:
-        SizeClassInfo sc_info;
-        uint32_t num_free;
+        PageHeap* page_heap;
         Span* span_list;
         Span* current_span; // cached pointer to a span w/ free objects, making common case allocate in O(1)
-        PageHeap* page_heap;
+        uint32_t size; // max # of bytes this size class can store
+        uint32_t num_free;
+        uint8_t pages; // # of pages associated with this size class
 
         Span* find_non_empty_span() {
             Span* s = span_list;
@@ -166,10 +183,10 @@ struct CentralFreeList {
         }
 
         void fetch_from_page_heap() {
-            if (sc_info.size == 0 || sc_info.pages == 0) return;
+            if (size == 0 || pages == 0) return;
 
             // TODO: check if this is correct
-            Span* span = page_heap->allocate_span(sc_info.pages, sc_info.size);
+            Span* span = page_heap->allocate_span(pages, size);
             if (!span) return;
 
             span->next = span_list;
@@ -179,9 +196,9 @@ struct CentralFreeList {
 
             auto* base = reinterpret_cast<std::byte*>(span->start * PAGE_SIZE);
             size_t total_bytes = static_cast<size_t>(span->num_pages) * PAGE_SIZE;
-            uint32_t count = static_cast<uint32_t>(total_bytes / sc_info.size);
+            uint32_t count = static_cast<uint32_t>(total_bytes / size);
             assert(count <= UINT16_MAX && "too many objects for 16-bit index");
-            uint16_t cap = pack_capacity(sc_info.size);
+            uint16_t cap = pack_capacity(size);
 
             span->total_objects = count;
             span->freelist_head = INVALID_INDEX;
@@ -191,7 +208,7 @@ struct CentralFreeList {
             while (i < count) {
                 uint16_t node_idx = static_cast<uint16_t>(i);
                 auto* node = static_cast<PackedNode*>(
-                    index_to_ptr(node_idx, base, sc_info.size));
+                    index_to_ptr(node_idx, base, size));
                 node->next_idx = span->freelist_head;
                 ++i;
 

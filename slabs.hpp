@@ -67,6 +67,30 @@ struct Slab {
             return false;
         }
 
+        void** push_destination(uint32_t size_class_idx) {
+            return &pointers[headers[size_class_idx].current];
+        }
+
+        void commit_push(uint32_t size_class_idx, uint32_t n) {
+            headers[size_class_idx].current += n;
+        }
+
+        void** pop_source(uint32_t size_class_idx, uint32_t n) {
+            return &pointers[headers[size_class_idx].current - n];
+        }
+
+        void commit_pop(uint32_t size_class_idx, uint32_t n) {
+            headers[size_class_idx].current -= n;
+        }
+
+        uint32_t available(uint32_t size_class_idx) {
+            return headers[size_class_idx].current - SIZE_CLASS_OFFSETS[size_class_idx];
+        }
+
+        uint32_t remaining(uint32_t size_class_idx) {
+            return headers[size_class_idx].end - headers[size_class_idx].current;
+        }
+
         static uint32_t get_begin(uint32_t size_class_idx) {
             return SIZE_CLASS_OFFSETS[size_class_idx];
         }

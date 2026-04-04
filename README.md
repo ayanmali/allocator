@@ -1,19 +1,17 @@
-A memory allocator implementation in C++.
+A memory allocator implementation in C++ inspired by the TCMalloc design.
 
 ### TODO
 - implement per-CPU caches w/ rseq syscall
 
-- Batch Transfer in the central free lists (num_to_move)
-  The sc_info.num_to_move field specifies how many objects to move at once between a thread cache and the CFL. This is a future optimization for when thread caches are added -- the CFL would expose fetch_batch(FreeObject** list, uint32_t count) and return_batch(FreeObject* list, uint32_t count) methods.
-
-- dynamic resizing of transfer cache capacity
+- dynamic resizing of transfer cache capacity (number of batches each size class's transfer cache can hold), capacity stealing across size classes
 
 - function inlining/no inlining
 
-- locking on the page heap, central free lists, and transfer cache
-  - lock free approach?
+- locking on the page heap, central free lists
 
 - replace page map with a radix tree or cache friendly hash table
+
+- NUMA-awareness
 
 - update struct member ordering and field access patterns
 
@@ -49,3 +47,7 @@ memory allocation via sbrk and mmap
 
 - storing 16 bit free object indexes inside spans to pack indexes together
   - unrolled linked list --> handles tiny allocations
+
+- lightweight locking on transfer caches
+
+- batch transfers between frontend slabs and transfer caches/CFLs

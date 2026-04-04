@@ -34,13 +34,13 @@ static constexpr uint16_t INVALID_INDEX = 0xFFFF;
 struct Span {
     uintptr_t start;      // page ID (address / PAGE_SIZE)
     uintptr_t num_pages;
-    uint32_t size_class;
-    bool is_free;
-    uint32_t total_objects;     // objects carved from this span (set by CentralFreeList)
-    uint16_t freelist_head = INVALID_INDEX; // index of first packed batch node
-    uint32_t num_free_objects;  // count of objects currently in this span's free list
     Span* next;
     Span* prev;
+    uint32_t size; // the size of the objects (bytes) stored in the Span
+    uint32_t total_objects;     // objects carved from this span (set by CentralFreeList)
+    uint32_t num_free_objects;  // count of objects currently in this span's free list
+    uint16_t freelist_head = INVALID_INDEX; // index of first packed batch node
+    bool is_free;
 };
 
 struct PageHeap {
@@ -62,14 +62,14 @@ struct PageHeap {
             page_map.clear();
         }
 
-        Span* allocate_span(uint32_t num_pages, uint32_t size_class) {
+        Span* allocate_span(uint32_t num_pages, uint32_t size) {
             if (num_pages == 0 || num_pages > MAX_PAGES) {
                 return nullptr;
             }
 
             /*
             Search free lists starting at the requested page count.
-            Within each list, pick the span whose size_class is closest to
+            Within each list, pick the span whose size is closest to
             the requested one (reuse-friendly for the central free list).
             */
             for (uint32_t i = num_pages; i <= MAX_PAGES; ++i) {
@@ -81,9 +81,9 @@ struct PageHeap {
                 uint32_t best_diff = UINT32_MAX;
                 Span* curr = free_lists[i];
                 while (curr) {
-                    uint32_t diff = (curr->size_class > size_class)
-                        ? curr->size_class - size_class
-                        : size_class - curr->size_class;
+                    uint32_t diff = (curr->size > size)
+                        ? curr->size - size
+                        : size - curr->size;
                     if (diff < best_diff) {
                         best_diff = diff;
                         best_span = curr;
@@ -96,7 +96,7 @@ struct PageHeap {
 
                 remove_from_free_list(best_span);
                 best_span->is_free = false;
-                best_span->size_class = size_class;
+                best_span->size = size;
 
                 if (best_span->num_pages > num_pages) {
                     split(best_span, num_pages);
@@ -118,7 +118,7 @@ struct PageHeap {
             Span* span = new Span{};
             span->start = reinterpret_cast<uintptr_t>(raw) / PAGE_SIZE;
             span->num_pages = num_pages;
-            span->size_class = size_class;
+            span->size = size;
             span->is_free = false;
             span->next = nullptr;
             span->prev = nullptr;
@@ -130,7 +130,7 @@ struct PageHeap {
         void return_span(Span* span) {
             if (!span) return;
             span->is_free = true;
-            span->size_class = 0;
+            span->size = 0;
 
             coalesce(span);
 
@@ -140,7 +140,7 @@ struct PageHeap {
                 Span* front = new Span{};
                 front->start = span->start;
                 front->num_pages = MAX_PAGES;
-                front->size_class = 0;
+                front->size = 0;
                 front->is_free = true;
                 front->next = nullptr;
                 front->prev = nullptr;
@@ -244,7 +244,7 @@ struct PageHeap {
             Span* remainder = new Span{};
             remainder->start = span->start + num_pages;
             remainder->num_pages = span->num_pages - num_pages;
-            remainder->size_class = 0;
+            remainder->size= 0;
             remainder->is_free = true;
             remainder->next = nullptr;
             remainder->prev = nullptr;

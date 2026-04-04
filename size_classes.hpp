@@ -3,17 +3,20 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <utility>
 
 struct SizeClassInfo {
     uint32_t size; // max # of bytes this size class can store
     uint8_t pages; // # of pages to allocate at a time
-    uint8_t batch_size; // # of objects that can be moved between a cache and a central list/transfer cache in one shot
+    uint8_t batch_size; // # of objects that can be moved between a cache and a central list/transfer cache in one shot; i.e. the # of pointers a batch can store
     uint16_t byte_budget; // determines how many objects get cached per CPU for the size class
 };
 
 // {size, pages, batch_size, byte_budget}
 // Sorted by size.  Index 0 is reserved for large allocations that
 // bypass the slab / central free list path entirely.
+
+static constexpr uint8_t MAX_BATCH_SIZE = 32;
 static constexpr SizeClassInfo SizeClasses[] = {
   //   size  pg  batch  budget
   {      0,   0,    0,      0},  // large allocs bypass the slab
@@ -71,8 +74,8 @@ static constexpr uint32_t NUM_SIZE_CLASSES = sizeof(SizeClasses) / sizeof(SizeCl
 // Round a byte size up to the smallest size class that can hold it.
 // Returns SizeClasses[0] (size == 0) if `in` exceeds the largest class,
 // signalling a large allocation.
-static SizeClassInfo round_size_class(size_t in) {
-    if (in == 0) return SizeClasses[1];
+static std::pair<SizeClassInfo, uint32_t> round_size_class(size_t in) {
+    if (in == 0) return std::pair<SizeClassInfo, uint32_t>{SizeClasses[1], 1};
 
     uint32_t lo = 1, hi = NUM_SIZE_CLASSES - 1;
     while (lo < hi) {
@@ -83,8 +86,8 @@ static SizeClassInfo round_size_class(size_t in) {
             hi = mid;
     }
     if (SizeClasses[lo].size >= in)
-        return SizeClasses[lo];
-    return SizeClasses[0];
+        return std::pair<SizeClassInfo, uint32_t>{SizeClasses[lo], lo};
+    return std::pair<SizeClassInfo, uint32_t>{SizeClasses[0], 0};
 }
 
 static uint32_t size_class_to_idx(uint32_t size) {
