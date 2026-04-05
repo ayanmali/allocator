@@ -3,9 +3,9 @@ Central free list -- the middle layer between the page heap (backend)
 and thread/CPU caches (frontend).
 
 One CentralFreeList instance exists per size class. When it runs out
-of objects it requests a span from the page heap and slices them into
-fixed-size objects stored in an unrolled linked list of packed 16-bit
-indexes, reducing pointer chasing and improving cache behavior.
+of objects it requests a span from the page heap and carves objects
+into the per-span free list incrementally, reducing eager page faults
+while keeping the same packed 16-bit index representation.
 
 When all objects from a span have been returned, the span is released
 back to the page heap for coalescing.
@@ -18,6 +18,7 @@ O(1) -- just unlink the span and return it; no scanning required.
 #define CENTRAL_FREE_LIST
 
 #include "page_heap.hpp"
+#include <algorithm>
 #include <cstddef>
 
 /*
@@ -77,6 +78,7 @@ struct CentralFreeList {
                 curr->freelist_head = INVALID_INDEX;
                 curr->num_free_objects = 0;
                 curr->total_objects = 0;
+                curr->next_uninitialized = 0;
                 page_heap->return_span(curr);
                 curr = next;
             }
@@ -86,13 +88,19 @@ struct CentralFreeList {
         }
 
         void* allocate() {
-            if (!current_span || current_span->freelist_head == INVALID_INDEX) {
-                current_span = find_non_empty_span();
+            if (!current_span || !span_has_available_objects(current_span)) {
+                current_span = find_available_span();
             }
             if (!current_span) {
                 fetch_from_page_heap();
             }
-            if (!current_span || current_span->freelist_head == INVALID_INDEX) {
+            if (!current_span) {
+                return nullptr;
+            }
+            if (current_span->freelist_head == INVALID_INDEX) {
+                populate_span(current_span);
+            }
+            if (current_span->freelist_head == INVALID_INDEX) {
                 return nullptr;
             }
 
@@ -173,39 +181,35 @@ struct CentralFreeList {
         uint32_t num_free;
         uint8_t pages; // # of pages associated with this size class
 
-        Span* find_non_empty_span() {
+        static bool span_has_available_objects(const Span* span) {
+            return span &&
+                (span->freelist_head != INVALID_INDEX ||
+                 span->next_uninitialized < span->total_objects);
+        }
+
+        Span* find_available_span() {
             Span* s = span_list;
             while (s) {
-                if (s->freelist_head != INVALID_INDEX) return s;
+                if (span_has_available_objects(s)) return s;
                 s = s->next;
             }
             return nullptr;
         }
 
-        void fetch_from_page_heap() {
-            if (size == 0 || pages == 0) return;
-
-            // TODO: check if this is correct
-            Span* span = page_heap->allocate_span(pages, size);
-            if (!span) return;
-
-            span->next = span_list;
-            span->prev = nullptr;
-            if (span_list) span_list->prev = span;
-            span_list = span;
+        void populate_span(Span* span) {
+            if (!span || span->next_uninitialized >= span->total_objects) {
+                return;
+            }
 
             auto* base = reinterpret_cast<std::byte*>(span->start * PAGE_SIZE);
-            size_t total_bytes = static_cast<size_t>(span->num_pages) * PAGE_SIZE;
-            uint32_t count = static_cast<uint32_t>(total_bytes / size);
-            assert(count <= UINT16_MAX && "too many objects for 16-bit index");
             uint16_t cap = pack_capacity(size);
+            uint32_t objects_per_chunk = std::max(PAGE_SIZE / size, (uint)1);
 
-            span->total_objects = count;
-            span->freelist_head = INVALID_INDEX;
-            span->num_free_objects = 0;
-
-            uint32_t i = 0;
-            while (i < count) {
+            uint32_t chunk_end = std::min(
+                span->total_objects,
+                span->next_uninitialized + objects_per_chunk);
+            uint32_t i = span->next_uninitialized;
+            while (i < chunk_end) {
                 uint16_t node_idx = static_cast<uint16_t>(i);
                 auto* node = static_cast<PackedNode*>(
                     index_to_ptr(node_idx, base, size));
@@ -214,15 +218,39 @@ struct CentralFreeList {
 
                 uint16_t packed = 0;
                 uint16_t* slots = packed_indexes(node);
-                while (packed < cap && i < count) {
+                while (packed < cap && i < chunk_end) {
                     slots[packed++] = static_cast<uint16_t>(i);
                     ++i;
                 }
                 node->count = packed;
                 span->freelist_head = node_idx;
+                uint32_t batch_objects = 1u + packed;
+                span->num_free_objects += batch_objects;
+                num_free += batch_objects;
             }
-            span->num_free_objects = count;
-            num_free += count;
+
+            span->next_uninitialized = chunk_end;
+        }
+
+        void fetch_from_page_heap() {
+            if (size == 0 || pages == 0) return;
+
+            Span* span = page_heap->allocate_span(pages, size);
+            if (!span) return;
+
+            span->next = span_list;
+            span->prev = nullptr;
+            if (span_list) span_list->prev = span;
+            span_list = span;
+
+            size_t total_bytes = static_cast<size_t>(span->num_pages) * PAGE_SIZE;
+            uint32_t count = static_cast<uint32_t>(total_bytes / size);
+            assert(count <= UINT16_MAX && "too many objects for 16-bit index");
+
+            span->total_objects = count;
+            span->freelist_head = INVALID_INDEX;
+            span->num_free_objects = 0;
+            span->next_uninitialized = 0;
 
             current_span = span;
         }
@@ -251,6 +279,7 @@ struct CentralFreeList {
             span->freelist_head = INVALID_INDEX;
             span->num_free_objects = 0;
             span->total_objects = 0;
+            span->next_uninitialized = 0;
             page_heap->return_span(span);
         }
 };

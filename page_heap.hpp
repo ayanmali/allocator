@@ -38,7 +38,8 @@ struct Span {
     Span* prev;
     uint32_t size; // the size of the objects (bytes) stored in the Span
     uint32_t total_objects;     // objects carved from this span (set by CentralFreeList)
-    uint32_t num_free_objects;  // count of objects currently in this span's free list
+    uint32_t num_free_objects;  // free objects currently linked into the span's free list
+    uint32_t next_uninitialized = 0; // first object that has not been carved yet
     uint16_t freelist_head = INVALID_INDEX; // index of first packed batch node
     bool is_free;
 };

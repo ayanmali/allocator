@@ -18,6 +18,7 @@ static constexpr uint32_t TRANSFER_CACHE_CAPACITY = 100;
 static constexpr uint32_t  MMAP_THRESHOLD = 400;
 
 static constexpr uint32_t MAX_SLAB_POINTERS = 20000;
+static constexpr bool PAGE_ALIGN_SLAB_STRIDE = false;
 
 // Each size class's pointer array capacity is derived from its byte_budget:
 //   raw_slots = byte_budget / obj_size, rounded down to a batch_size multiple.
@@ -58,5 +59,15 @@ static constexpr auto compute_slab_offsets() {
 }
 
 static constexpr auto SIZE_CLASS_OFFSETS = compute_slab_offsets();
+
+static constexpr auto compute_slab_capacities() {
+  std::array<uint32_t, NUM_SIZE_CLASSES> capacities{};
+  for (uint32_t i = 0; i < NUM_SIZE_CLASSES; ++i) {
+      capacities[i] = SIZE_CLASS_OFFSETS[i + 1] - SIZE_CLASS_OFFSETS[i];
+  }
+  return capacities;
+}
+
+static constexpr auto SIZE_CLASS_CAPACITIES = compute_slab_capacities();
 
 #endif

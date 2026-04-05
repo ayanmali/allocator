@@ -17,7 +17,7 @@ struct Allocator {
     public:
         Allocator() {
             // initialize each CFL
-            for (auto i = 0; i < NUM_SIZE_CLASSES; ++i) {
+            for (uint32_t i = 0; i < NUM_SIZE_CLASSES; ++i) {
                 new(&free_list[i]) CentralFreeList(&page_heap, SizeClasses[i]);
             }
 #if defined(__linux__)
@@ -28,22 +28,12 @@ struct Allocator {
 #else
             const size_t num_cpus = std::thread::hardware_concurrency();
 #endif
-            per_cpu_caches = static_cast<Slabs*>(mmap(nullptr, num_cpus * SLAB_BYTE_SIZE,
+            per_cpu_caches = static_cast<Slabs*>(mmap(nullptr, num_cpus * SLAB_STRIDE_BYTES,
                 PROT_READ | PROT_WRITE,
                 MAP_ANONYMOUS | MAP_PRIVATE,
                 -1, 0));
             if (per_cpu_caches == MAP_FAILED) {
                 throw std::runtime_error("Failed to mmap per-CPU caches");
-            }
-            for (uint32_t i = 0; i < num_cpus; ++i) {
-                // new (get_slabs(per_cpu_caches, i)) Slabs();
-                Slabs* s = get_slabs(per_cpu_caches, i);
-                for (uint32_t i = 0; i < NUM_SIZE_CLASSES; ++i) {
-                    s->headers[i] = make_header(
-                    static_cast<uint16_t>(SIZE_CLASS_OFFSETS[i]),
-                    static_cast<uint16_t>(SIZE_CLASS_OFFSETS[i + 1]));
-                }
-
             }
         }
         Allocator(Allocator& a) = delete;
@@ -57,8 +47,7 @@ struct Allocator {
                 return nullptr;
             }
 
-            uint32_t begin = Slabs::get_begin(sc_idx);
-            void* ptr = slab_pop(per_cpu_caches, sc_idx, begin);
+            void* ptr = slab_pop(per_cpu_caches, sc_idx);
             if (ptr) return ptr;
 
             #if defined(__linux__)
@@ -75,7 +64,7 @@ struct Allocator {
             }
             if (got > 0) {
                 slabs->commit_push(sc_idx, got);
-                return slab_pop(per_cpu_caches, sc_idx, begin);
+                return slab_pop(per_cpu_caches, sc_idx);
             }
 
             return nullptr;
