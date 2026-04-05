@@ -12,6 +12,8 @@ A memory allocator implementation in C++ inspired by the TCMalloc design.
 - replace page map with a radix tree or cache friendly hash table
 
 - NUMA-awareness
+  - interleave pages
+  - bind per-CPU slabs to NUMA nodes
 
 - update struct member ordering and field access patterns
 

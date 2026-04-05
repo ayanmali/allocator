@@ -17,11 +17,11 @@ static constexpr uint32_t TRANSFER_CACHE_CAPACITY = 100;
 // static constexpr size_t MMAP_THRESHOLD = 256000;
 static constexpr uint32_t  MMAP_THRESHOLD = 400;
 
-static constexpr uint32_t PER_CPU_SLAB_SIZE = 20000;
+static constexpr uint32_t MAX_SLAB_POINTERS = 20000;
 
 // Each size class's pointer array capacity is derived from its byte_budget:
 //   raw_slots = byte_budget / obj_size, rounded down to a batch_size multiple.
-// If the total exceeds PER_CPU_SLAB_SIZE, all capacities are scaled down
+// If the total exceeds MAX_SLAB_POINTERS, all capacities are scaled down
 // proportionally (preserving batch alignment).
 // Returns NUM_SIZE_CLASSES + 1 offsets so that class i owns
 // [offsets[i], offsets[i+1]).
@@ -41,10 +41,10 @@ static constexpr auto compute_slab_offsets() {
       total += cap;
   }
   // Scale down if total exceeds slab size
-  if (total > PER_CPU_SLAB_SIZE) {
+  if (total > MAX_SLAB_POINTERS) {
       for (uint32_t i = 1; i < NUM_SIZE_CLASSES; ++i) {
           uint32_t batch = SizeClasses[i].batch_size;
-          capacities[i] = (capacities[i] * PER_CPU_SLAB_SIZE / total);
+          capacities[i] = (capacities[i] * MAX_SLAB_POINTERS / total);
           capacities[i] = (capacities[i] / batch) * batch;
           if (capacities[i] < batch) capacities[i] = batch;
       }

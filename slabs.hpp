@@ -35,21 +35,22 @@ static inline uint32_t make_header(uint16_t cur, uint16_t end) {
 }
 
 /*
+Implemented as one contiguous mmap'd region.
 Each slab represents a cache corresponding to one logical CPU.
 Each slab contains an array of pointers, which is packed to contain pointers to objects across all size classes 
 TODO: add cache line alignment
 */
-struct Slab {
+struct Slabs {
     uint32_t headers[NUM_SIZE_CLASSES]; // contains two packed 16-bit ints: current (points to next valid slot) and end (points to one past the last valid slot)
     void* pointers[]; // array of pointers across every size class
 
-    Slab() {
-        for (uint32_t i = 0; i < NUM_SIZE_CLASSES; ++i) {
-            headers[i] = make_header(
-                static_cast<uint16_t>(SIZE_CLASS_OFFSETS[i]),
-                static_cast<uint16_t>(SIZE_CLASS_OFFSETS[i + 1]));
-        }
-    }
+    // Slabs() {
+    //     for (uint32_t i = 0; i < NUM_SIZE_CLASSES; ++i) {
+    //         headers[i] = make_header(
+    //             static_cast<uint16_t>(SIZE_CLASS_OFFSETS[i]),
+    //             static_cast<uint16_t>(SIZE_CLASS_OFFSETS[i + 1]));
+    //     }
+    // }
 
     void** push_destination(uint32_t sc_idx) {
         return &pointers[hdr_current(headers[sc_idx])];
@@ -85,7 +86,7 @@ struct Slab {
 Popping from the stack
 TODO: implement prefetching?
 */
-inline void* fallback_allocate(Slab* slab, uint32_t sc_idx) {
+inline void* fallback_allocate(Slabs* slab, uint32_t sc_idx) {
     uint16_t cur = hdr_current(slab->headers[sc_idx]);
     if (cur > SIZE_CLASS_OFFSETS[sc_idx]) {
         void* ptr = slab->pointers[cur - 1];
@@ -98,7 +99,7 @@ inline void* fallback_allocate(Slab* slab, uint32_t sc_idx) {
 /*
 Pushing onto the stack
 */
-inline bool fallback_deallocate(Slab* slab, void* mem, uint32_t sc_idx) {
+inline bool fallback_deallocate(Slabs* slab, void* mem, uint32_t sc_idx) {
     uint32_t h = slab->headers[sc_idx];
     uint16_t cur = hdr_current(h);
     if (cur < hdr_end(h)) {
@@ -123,6 +124,8 @@ static constexpr int      RSEQ_CPU_ID_OFFSET  = 4;
 static constexpr int      RSEQ_CS_OFFSET      = 8;
 static constexpr size_t   SLAB_POINTERS_OFFSET =
     NUM_SIZE_CLASSES * sizeof(uint32_t);
+static constexpr size_t   SLAB_BYTE_SIZE =
+    SLAB_POINTERS_OFFSET + SIZE_CLASS_OFFSETS[NUM_SIZE_CLASSES] * sizeof(void*);
 
 static inline char* get_rseq_ptr() {
     return reinterpret_cast<char*>(__builtin_thread_pointer()) + __rseq_offset;
@@ -139,12 +142,13 @@ Returns the pointer, or nullptr if that size class's stack is empty.
 
 `begin` is SIZE_CLASS_OFFSETS[sc_idx] (the empty-stack sentinel).
 */
-static inline void* rseq_slab_pop(Slab** slabs,
+static inline void* rseq_slab_pop(Slabs* slabs_base,
                                    uint32_t sc_idx,
                                    uint32_t begin)
 {
     void*    result;
     char*    rseq = get_rseq_ptr();
+    char*    base = reinterpret_cast<char*>(slabs_base);
     uint64_t hdr_off = static_cast<uint64_t>(sc_idx) * sizeof(uint32_t);
 
     __asm__ __volatile__ (
@@ -165,7 +169,8 @@ static inline void* rseq_slab_pop(Slab** slabs,
         "movq %%rax, %c[cs_off](%[rseq])\n\t"
 
         "movl %c[cpu_off](%[rseq]), %%ecx\n\t"
-        "movq (%[slabs], %%rcx, 8), %%r8\n\t"
+        "imulq %[stride], %%rcx, %%r8\n\t"
+        "addq %[base], %%r8\n\t"
 
         "movzwl 2(%%r8, %[hdr_off], 1), %%eax\n\t"
         "cmpl %k[begin], %%eax\n\t"
@@ -196,10 +201,11 @@ static inline void* rseq_slab_pop(Slab** slabs,
         "16:\n\t"
 
         : [result] "=&r" (result)
-        : [slabs]   "r" (slabs),
+        : [base]     "r" (base),
           [hdr_off]  "r" (hdr_off),
           [begin]    "r" (static_cast<uint64_t>(begin)),
           [rseq]     "r" (rseq),
+          [stride]   "i" (SLAB_BYTE_SIZE),
           [cs_off]   "i" (RSEQ_CS_OFFSET),
           [cpu_off]  "i" (RSEQ_CPU_ID_OFFSET),
           [ptr_off]  "i" (SLAB_POINTERS_OFFSET),
@@ -213,12 +219,13 @@ static inline void* rseq_slab_pop(Slab** slabs,
 Push `ptr` onto slab->pointers[] for size class `sc_idx`.
 Returns true on success, false if that size class's stack is full.
 */
-static inline bool rseq_slab_push(Slab** slabs,
+static inline bool rseq_slab_push(Slabs* slabs_base,
                                    uint32_t sc_idx,
                                    void* ptr)
 {
     int      ok;
     char*    rseq = get_rseq_ptr();
+    char*    base = reinterpret_cast<char*>(slabs_base);
     uint64_t hdr_off = static_cast<uint64_t>(sc_idx) * sizeof(uint32_t);
 
     __asm__ __volatile__ (
@@ -239,7 +246,8 @@ static inline bool rseq_slab_push(Slab** slabs,
         "movq %%rax, %c[cs_off](%[rseq])\n\t"
 
         "movl %c[cpu_off](%[rseq]), %%ecx\n\t"
-        "movq (%[slabs], %%rcx, 8), %%r8\n\t"
+        "imulq %[stride], %%rcx, %%r8\n\t"
+        "addq %[base], %%r8\n\t"
 
         "movzwl 2(%%r8, %[hdr_off], 1), %%eax\n\t"
         "movzwl (%%r8, %[hdr_off], 1), %%r9d\n\t"
@@ -272,10 +280,11 @@ static inline bool rseq_slab_push(Slab** slabs,
         "26:\n\t"
 
         : [ok] "=&r" (ok)
-        : [slabs]   "r" (slabs),
+        : [base]     "r" (base),
           [hdr_off]  "r" (hdr_off),
           [ptr]      "r" (ptr),
           [rseq]     "r" (rseq),
+          [stride]   "i" (SLAB_BYTE_SIZE),
           [cs_off]   "i" (RSEQ_CS_OFFSET),
           [cpu_off]  "i" (RSEQ_CPU_ID_OFFSET),
           [ptr_off]  "i" (SLAB_POINTERS_OFFSET),
@@ -299,27 +308,32 @@ static inline int fallback_get_cpu() {
 #endif
 }
 
+static inline Slabs* get_slabs(Slabs* slabs_base, uint32_t cpu_id) {
+    return reinterpret_cast<Slabs*>(
+        reinterpret_cast<char*>(slabs_base) + cpu_id * SLAB_BYTE_SIZE);
+}
+
 // TODO: implement prefetching?
-static inline void* slab_pop(Slab** slabs,
+static inline void* slab_pop(Slabs* slabs_base,
                               uint32_t sc_idx,
                               uint32_t begin)
 {
 #if defined(__linux__) && defined(__x86_64__)
     if (__builtin_expect(__rseq_size > 0, 1))
-        return rseq_slab_pop(slabs, sc_idx, begin);
+        return rseq_slab_pop(slabs_base, sc_idx, begin);
 #endif
-    return fallback_allocate(slabs[fallback_get_cpu()], sc_idx);
+    return fallback_allocate(get_slabs(slabs_base, fallback_get_cpu()), sc_idx);
 }
 
-static inline bool slab_push(Slab** slabs,
+static inline bool slab_push(Slabs* slabs_base,
                               uint32_t sc_idx,
                               void* ptr)
 {
 #if defined(__linux__) && defined(__x86_64__)
     if (__builtin_expect(__rseq_size > 0, 1))
-        return rseq_slab_push(slabs, sc_idx, ptr);
+        return rseq_slab_push(slabs_base, sc_idx, ptr);
 #endif
-    return fallback_deallocate(slabs[fallback_get_cpu()], ptr, sc_idx);
+    return fallback_deallocate(get_slabs(slabs_base, fallback_get_cpu()), ptr, sc_idx);
 }
 
 #endif /* RSEQ_OPS */
