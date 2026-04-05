@@ -64,9 +64,9 @@ struct CentralFreeList {
             : page_heap(nullptr), span_list(nullptr), current_span(nullptr),
               size(0), num_free(0), pages(0) {}
 
-        CentralFreeList(PageHeap* ph, uint32_t size, uint8_t pages)
+        CentralFreeList(PageHeap* ph, const SizeClassInfo& sc)
             : page_heap(ph), span_list(nullptr), current_span(nullptr),
-              size(size), num_free(0), pages(pages) {}
+              size(sc.size), num_free(0), pages(sc.pages) {}
 
         ~CentralFreeList() {
             Span* curr = span_list;

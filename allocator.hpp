@@ -1,18 +1,11 @@
 #ifndef ALLOCATOR
 #define ALLOCATOR
 /*
-Orchestrates the three layers of the memory allocator.
-
-In the middle-end (central free lists + transfer cache),
-a size class's central free list should be lazily initialized,
-i.e., it should only be created once it is explicitly requested.
-
-struct of arrays pattern
+Connects the three layers of the memory allocator.
 */
 #include <thread>
 #include "central_free_list.hpp"
 #include "page_heap.hpp"
-#include "rseq_ops.hpp"
 #include "size_classes.hpp"
 #include "slabs.hpp"
 #include "transfer_cache.hpp"
@@ -21,13 +14,20 @@ struct Allocator {
     public:
         Allocator() {
             // initialize each CFL
-            // ...
+            for (auto i = 0; i < NUM_SIZE_CLASSES; ++i) {
+                free_list[i] = CentralFreeList(&page_heap, SizeClasses[i]);
+            }
             const auto num_cpus = std::thread::hardware_concurrency();
-            void* per_cpu_region = mmap();
+            void* per_cpu_region = mmap(nullptr, sizeof(Slab) * num_cpus, 
+            PROT_READ | PROT_WRITE,
+            MAP_ANONYMOUS | MAP_PRIVATE,
+            -1, 0);
             // split the region into Slabs (one per logical CPU)
 
         }
-        ~Allocator() = default;
+        Allocator(Allocator& a) = delete;
+        Allocator operator=(Allocator& a) = delete;
+        virtual ~Allocator() = default;
 
         void* allocate(size_t input_size) {
             auto [sc, sc_idx] = round_size_class(input_size);
