@@ -26,7 +26,7 @@ struct Allocator {
 
         }
         Allocator(Allocator& a) = delete;
-        Allocator operator=(Allocator& a) = delete;
+        Allocator& operator=(const Allocator& a) = delete;
         virtual ~Allocator() = default;
 
         void* allocate(size_t input_size) {

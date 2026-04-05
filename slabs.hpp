@@ -24,53 +24,59 @@ After the last header comes the first pointer array for the first size class.
 Each pointer array's capacity should be a multiple of the corresponding size class's batch size
 
 */
-struct SlabHeader {
-    uint16_t current; // points to next valid slot
-    uint16_t end; // one past the last valid slot
-};
+/*
+Packed header: upper 16 bits = current, lower 16 bits = end.
+On little-endian x86, current occupies byte offset +2, end occupies byte offset +0.
+*/
+static inline uint16_t hdr_current(uint32_t h) { return static_cast<uint16_t>(h >> 16); }
+static inline uint16_t hdr_end(uint32_t h)     { return static_cast<uint16_t>(h & LOW_16_MASK); }
+static inline uint32_t make_header(uint16_t cur, uint16_t end) {
+    return (static_cast<uint32_t>(cur) << 16) | end;
+}
 
 /*
 Each slab represents a cache corresponding to one logical CPU.
 Each slab contains an array of pointers, which is packed to contain pointers to objects across all size classes 
+TODO: add cache line alignment
 */
 struct Slab {
-    SlabHeader headers[NUM_SIZE_CLASSES];
+    uint32_t headers[NUM_SIZE_CLASSES]; // contains two packed 16-bit ints: current (points to next valid slot) and end (points to one past the last valid slot)
     void* pointers[]; // array of pointers across every size class
 
     Slab() {
-        // set the current and end indices for each header
         for (uint32_t i = 0; i < NUM_SIZE_CLASSES; ++i) {
-            headers[i].current = SIZE_CLASS_OFFSETS[i];
-            headers[i].end = SIZE_CLASS_OFFSETS[i + 1];
+            headers[i] = make_header(
+                static_cast<uint16_t>(SIZE_CLASS_OFFSETS[i]),
+                static_cast<uint16_t>(SIZE_CLASS_OFFSETS[i + 1]));
         }
     }
 
-    void** push_destination(uint32_t size_class_idx) {
-        return &pointers[headers[size_class_idx].current];
+    void** push_destination(uint32_t sc_idx) {
+        return &pointers[hdr_current(headers[sc_idx])];
     }
 
-    void commit_push(uint32_t size_class_idx, uint32_t n) {
-        headers[size_class_idx].current += n;
+    void commit_push(uint32_t sc, uint32_t n) {
+        headers[sc] += (n << 16);
     }
 
-    void** pop_source(uint32_t size_class_idx, uint32_t n) {
-        return &pointers[headers[size_class_idx].current - n];
+    void** pop_source(uint32_t sc, uint32_t n) {
+        return &pointers[hdr_current(headers[sc]) - n];
     }
 
-    void commit_pop(uint32_t size_class_idx, uint32_t n) {
-        headers[size_class_idx].current -= n;
+    void commit_pop(uint32_t sc, uint32_t n) {
+        headers[sc] -= (n << 16);
     }
 
-    uint32_t available(uint32_t size_class_idx) {
-        return headers[size_class_idx].current - SIZE_CLASS_OFFSETS[size_class_idx];
+    uint32_t available(uint32_t sc_idx) {
+        return hdr_current(headers[sc_idx]) - SIZE_CLASS_OFFSETS[sc_idx];
     }
 
-    uint32_t remaining(uint32_t size_class_idx) {
-        return headers[size_class_idx].end - headers[size_class_idx].current;
+    uint32_t remaining(uint32_t sc_idx) {
+        return hdr_end(headers[sc_idx]) - hdr_current(headers[sc_idx]);
     }
 
-    static uint32_t get_begin(uint32_t size_class_idx) {
-        return SIZE_CLASS_OFFSETS[size_class_idx];
+    static uint32_t get_begin(uint32_t sc_idx) {
+        return SIZE_CLASS_OFFSETS[sc_idx];
     }
 
 };
@@ -79,12 +85,11 @@ struct Slab {
 Popping from the stack
 TODO: implement prefetching?
 */
-inline void* fallback_allocate(Slab* slab, uint32_t size_class_idx) {
-    auto& hdr = slab->headers[size_class_idx];
-    if (hdr.current > SIZE_CLASS_OFFSETS[size_class_idx]) {
-        auto idx = hdr.current - 1;
-        auto ptr = slab->pointers[idx];
-        hdr.current = idx; // rseq commit operation
+inline void* fallback_allocate(Slab* slab, uint32_t sc_idx) {
+    uint16_t cur = hdr_current(slab->headers[sc_idx]);
+    if (cur > SIZE_CLASS_OFFSETS[sc_idx]) {
+        void* ptr = slab->pointers[cur - 1];
+        slab->headers[sc_idx] -= (1u << 16);
         return ptr;
     }
     return nullptr;
@@ -93,13 +98,12 @@ inline void* fallback_allocate(Slab* slab, uint32_t size_class_idx) {
 /*
 Pushing onto the stack
 */
-inline bool fallback_deallocate(Slab* slab, void* mem, uint32_t size_class_idx) {
-    auto& hdr = slab->headers[size_class_idx];
-    if (hdr.current < hdr.end) {
-        auto idx = hdr.current + 1;
-        // attempt to push onto stack; if full, return false
-        slab->pointers[idx] = mem;
-        ++hdr.current;
+inline bool fallback_deallocate(Slab* slab, void* mem, uint32_t sc_idx) {
+    uint32_t h = slab->headers[sc_idx];
+    uint16_t cur = hdr_current(h);
+    if (cur < hdr_end(h)) {
+        slab->pointers[cur] = mem;
+        slab->headers[sc_idx] += (1u << 16);
         return true;
     }
     return false;
@@ -118,7 +122,7 @@ static constexpr uint32_t RSEQ_SIG            = 0x53053053;
 static constexpr int      RSEQ_CPU_ID_OFFSET  = 4;
 static constexpr int      RSEQ_CS_OFFSET      = 8;
 static constexpr size_t   SLAB_POINTERS_OFFSET =
-    NUM_SIZE_CLASSES * sizeof(SlabHeader);
+    NUM_SIZE_CLASSES * sizeof(uint32_t);
 
 static inline char* get_rseq_ptr() {
     return reinterpret_cast<char*>(__builtin_thread_pointer()) + __rseq_offset;
@@ -141,7 +145,7 @@ static inline void* rseq_slab_pop(Slab** slabs,
 {
     void*    result;
     char*    rseq = get_rseq_ptr();
-    uint64_t hdr_off = static_cast<uint64_t>(sc_idx) * sizeof(SlabHeader);
+    uint64_t hdr_off = static_cast<uint64_t>(sc_idx) * sizeof(uint32_t);
 
     __asm__ __volatile__ (
         /* ---- rseq_cs descriptor (in __rseq_cs section) ---- */
@@ -163,15 +167,15 @@ static inline void* rseq_slab_pop(Slab** slabs,
         "movl %c[cpu_off](%[rseq]), %%ecx\n\t"
         "movq (%[slabs], %%rcx, 8), %%r8\n\t"
 
-        "movzwl (%%r8, %[hdr_off], 1), %%eax\n\t"
+        "movzwl 2(%%r8, %[hdr_off], 1), %%eax\n\t"
         "cmpl %k[begin], %%eax\n\t"
         "jbe 15f\n\t"
 
         "decl %%eax\n\t"
         "movq %c[ptr_off](%%r8, %%rax, 8), %%r9\n\t"
 
-        /* COMMIT: write decremented current back to header */
-        "movw %%ax, (%%r8, %[hdr_off], 1)\n\t"
+        /* COMMIT: write decremented current back (byte offset +2) */
+        "movw %%ax, 2(%%r8, %[hdr_off], 1)\n\t"
 
         /* ---- post-commit ---- */
         "13:\n\t"
@@ -215,7 +219,7 @@ static inline bool rseq_slab_push(Slab** slabs,
 {
     int      ok;
     char*    rseq = get_rseq_ptr();
-    uint64_t hdr_off = static_cast<uint64_t>(sc_idx) * sizeof(SlabHeader);
+    uint64_t hdr_off = static_cast<uint64_t>(sc_idx) * sizeof(uint32_t);
 
     __asm__ __volatile__ (
         /* ---- rseq_cs descriptor ---- */
@@ -237,17 +241,17 @@ static inline bool rseq_slab_push(Slab** slabs,
         "movl %c[cpu_off](%[rseq]), %%ecx\n\t"
         "movq (%[slabs], %%rcx, 8), %%r8\n\t"
 
-        "movzwl (%%r8, %[hdr_off], 1), %%eax\n\t"
-        "movzwl 2(%%r8, %[hdr_off], 1), %%r9d\n\t"
+        "movzwl 2(%%r8, %[hdr_off], 1), %%eax\n\t"
+        "movzwl (%%r8, %[hdr_off], 1), %%r9d\n\t"
         "cmpl %%r9d, %%eax\n\t"
         "jge 25f\n\t"
 
         /* Store pointer into the free slot (beyond current stack top) */
         "movq %[ptr], %c[ptr_off](%%r8, %%rax, 8)\n\t"
 
-        /* COMMIT: write current + 1 back to header */
+        /* COMMIT: write current + 1 back (byte offset +2) */
         "incl %%eax\n\t"
-        "movw %%ax, (%%r8, %[hdr_off], 1)\n\t"
+        "movw %%ax, 2(%%r8, %[hdr_off], 1)\n\t"
 
         /* ---- post-commit ---- */
         "23:\n\t"
