@@ -50,11 +50,7 @@ struct Allocator {
             void* ptr = slab_pop(per_cpu_caches, sc_idx);
             if (ptr) return ptr;
 
-            #if defined(__linux__)
-            auto cpu_id = static_cast<uint8_t>(*get_rseq_ptr());
-            #else
-            auto cpu_id = fallback_get_cpu();
-            #endif
+            uint32_t cpu_id = current_cpu_id();
             Slabs* slabs = get_slabs(per_cpu_caches, cpu_id);
             void** dest = slabs->push_destination(sc_idx);
             uint32_t got = transfer_caches[sc_idx].RemoveRange(dest, sc.batch_size);
@@ -82,11 +78,7 @@ struct Allocator {
 
             if (slab_push(per_cpu_caches, sc_idx, mem)) return;
 
-            #if defined(__linux__)
-            auto cpu_id = static_cast<uint8_t>(*get_rseq_ptr());
-            #else
-            auto cpu_id = fallback_get_cpu();
-            #endif
+            uint32_t cpu_id = current_cpu_id();
             Slabs* slabs = get_slabs(per_cpu_caches, cpu_id);
             uint32_t n = sc.batch_size;
             void** src = slabs->pop_source(sc_idx, n);

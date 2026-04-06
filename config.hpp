@@ -8,7 +8,9 @@ static constexpr size_t CACHE_LINE_SIZE = 64;
 static constexpr uint16_t LOW_16_MASK = 0x0000FFFF;
 static constexpr uint32_t HIGH_16_MASK = 0xFFFF0000;
 
-static constexpr uint32_t  PAGE_SIZE = 8000; // 8 KB page size
+// PageHeap stores span addresses as page IDs (address / PAGE_SIZE), so this
+// must match the OS page size used by mmap on the target platform.
+static constexpr uint32_t  PAGE_SIZE = 4096;
 
 static constexpr uint32_t MAX_PAGES = 255;
 

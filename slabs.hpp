@@ -97,14 +97,10 @@ inline bool fallback_deallocate(Slabs* slab, void* mem, uint32_t sc_idx) {
 
 #if defined(__linux__)
 #include <sched.h>
+#include <sys/rseq.h>
 #endif
 
-extern "C" {
-    extern ptrdiff_t __rseq_offset;
-    extern unsigned int __rseq_size;
-}
-
-static constexpr uint32_t RSEQ_SIG            = 0x53053053;
+static constexpr uint32_t RSEQ_ABORT_SIGNATURE = 0x53053053;
 static constexpr int      RSEQ_CPU_ID_OFFSET  = 4;
 static constexpr int      RSEQ_CS_OFFSET      = 8;
 static constexpr size_t   SLAB_HEADERS_BYTES =
@@ -119,6 +115,29 @@ static constexpr size_t   SLAB_STRIDE_BYTES =
 
 static inline char* get_rseq_ptr() {
     return reinterpret_cast<char*>(__builtin_thread_pointer()) + __rseq_offset;
+}
+
+static inline uint32_t fallback_get_cpu();
+
+static inline bool rseq_available() {
+#if defined(__linux__) && defined(__x86_64__)
+    return __rseq_size >= sizeof(struct rseq);
+#else
+    return false;
+#endif
+}
+
+static inline uint32_t current_cpu_id() {
+#if defined(__linux__) && defined(__x86_64__)
+    if (rseq_available()) {
+        auto* rseq = reinterpret_cast<volatile struct rseq*>(get_rseq_ptr());
+        uint32_t cpu_id = rseq->cpu_id;
+        if (cpu_id >= 0) {
+            return cpu_id;
+        }
+    }
+#endif
+    return fallback_get_cpu();
 }
 
 // ---------------------------------------------------------------------------
@@ -201,7 +220,7 @@ static inline void* rseq_slab_pop(Slabs* slabs_base,
           [cs_off]   "i" (RSEQ_CS_OFFSET),
           [cpu_off]  "i" (RSEQ_CPU_ID_OFFSET),
           [ptr_off]  "i" (SLAB_POINTERS_OFFSET),
-          [sig]      "i" (RSEQ_SIG)
+          [sig]      "i" (RSEQ_ABORT_SIGNATURE)
         : "rax", "rcx", "rdx", "r8", "r9", "memory", "cc"
     );
     return result;
@@ -287,7 +306,7 @@ static inline bool rseq_slab_push(Slabs* slabs_base,
           [cs_off]   "i" (RSEQ_CS_OFFSET),
           [cpu_off]  "i" (RSEQ_CPU_ID_OFFSET),
           [ptr_off]  "i" (SLAB_POINTERS_OFFSET),
-          [sig]      "i" (RSEQ_SIG)
+          [sig]      "i" (RSEQ_ABORT_SIGNATURE)
         : "rax", "rcx", "r8", "r9", "r10", "memory", "cc"
     );
     return ok != 0;
@@ -299,9 +318,9 @@ static inline bool rseq_slab_push(Slabs* slabs_base,
 // Unified wrappers (rseq when available, plain fallback otherwise)
 // ---------------------------------------------------------------------------
 
-static inline int fallback_get_cpu() {
+static inline uint32_t fallback_get_cpu() {
 #if defined(__linux__)
-    return sched_getcpu();
+    return static_cast<uint32_t>(sched_getcpu());
 #else
     return 0;
 #endif
@@ -317,7 +336,7 @@ static inline void* slab_pop(Slabs* slabs_base,
                               uint32_t sc_idx)
 {
 #if defined(__linux__) && defined(__x86_64__)
-    if (__builtin_expect(__rseq_size > 0, 1))
+    if (__builtin_expect(rseq_available(), 1))
         return rseq_slab_pop(slabs_base, sc_idx);
 #endif
     return fallback_allocate(get_slabs(slabs_base, fallback_get_cpu()), sc_idx);
@@ -328,7 +347,7 @@ static inline bool slab_push(Slabs* slabs_base,
                               void* ptr)
 {
 #if defined(__linux__) && defined(__x86_64__)
-    if (__builtin_expect(__rseq_size > 0, 1))
+    if (__builtin_expect(rseq_available(), 1))
         return rseq_slab_push(slabs_base, sc_idx, ptr);
 #endif
     return fallback_deallocate(get_slabs(slabs_base, fallback_get_cpu()), ptr, sc_idx);
