@@ -4,7 +4,6 @@
 Connects the three layers of the memory allocator.
 */
 #include <stdexcept>
-#include <thread>
 #include <sched.h>
 #include <sys/mman.h>
 #include "central_free_list.hpp"

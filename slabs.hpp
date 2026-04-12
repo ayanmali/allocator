@@ -24,6 +24,11 @@ storage for every size class. Pointer ranges are precomputed so each
 size class still owns a fixed slice of the pointer array.
 
 */
+
+// extern "C" {
+//     extern struct rseq __rseq_abi __attribute__((tls_model("initial-exec")));
+// }
+
 static constexpr size_t align_up(size_t value, size_t alignment) {
     return alignment == 0
         ? value
@@ -39,7 +44,7 @@ represent a valid empty slab, so untouched slabs stay lazily faulted in.
 */
 struct Slabs {
     uint16_t currents[NUM_SIZE_CLASSES];
-    void* pointers[]; // array of pointers across every size class
+    alignas(CACHE_LINE_SIZE) void* pointers[]; // array of pointers across every size class
 
     void** push_destination(uint32_t sc_idx) {
         return &pointers[SIZE_CLASS_OFFSETS[sc_idx] + currents[sc_idx]];
@@ -101,23 +106,36 @@ inline bool fallback_deallocate(Slabs* slab, void* mem, uint32_t sc_idx) {
 #endif
 
 static constexpr uint32_t RSEQ_ABORT_SIGNATURE = 0x53053053;
-static constexpr int      RSEQ_CPU_ID_OFFSET  = 4;
-static constexpr int      RSEQ_CS_OFFSET      = 8;
-static constexpr size_t   SLAB_HEADERS_BYTES =
+#if defined(__linux__) && defined(__x86_64__)
+static constexpr int      RSEQ_CPU_ID_START_OFFSET =
+    static_cast<int>(offsetof(struct rseq, cpu_id_start));
+static constexpr int      RSEQ_CPU_ID_OFFSET =
+    static_cast<int>(offsetof(struct rseq, cpu_id));
+static constexpr int      RSEQ_CS_OFFSET =
+    static_cast<int>(offsetof(struct rseq, rseq_cs));
+#else
+static constexpr int      RSEQ_CPU_ID_START_OFFSET = 0;
+static constexpr int      RSEQ_CPU_ID_OFFSET = 0;
+static constexpr int      RSEQ_CS_OFFSET = 0;
+#endif
+static constexpr size_t   SLAB_POINTERS_OFFSET =
     align_up(NUM_SIZE_CLASSES * sizeof(uint16_t), CACHE_LINE_SIZE);
-static constexpr size_t   SLAB_POINTERS_OFFSET = SLAB_HEADERS_BYTES;
+
 static constexpr size_t   SLAB_RAW_BYTE_SIZE =
     SLAB_POINTERS_OFFSET + SIZE_CLASS_OFFSETS[NUM_SIZE_CLASSES] * sizeof(void*);
+
 static constexpr size_t   SLAB_STRIDE_ALIGNMENT =
     PAGE_ALIGN_SLAB_STRIDE ? PAGE_SIZE : CACHE_LINE_SIZE;
+
 static constexpr size_t   SLAB_STRIDE_BYTES =
     align_up(SLAB_RAW_BYTE_SIZE, SLAB_STRIDE_ALIGNMENT);
+
+static_assert(offsetof(Slabs, pointers) == SLAB_POINTERS_OFFSET,
+              "Slabs pointer storage layout must match the rseq/fallback offsets");
 
 static inline char* get_rseq_ptr() {
     return reinterpret_cast<char*>(__builtin_thread_pointer()) + __rseq_offset;
 }
-
-static inline uint32_t fallback_get_cpu();
 
 static inline bool rseq_available() {
 #if defined(__linux__) && defined(__x86_64__)
@@ -127,13 +145,25 @@ static inline bool rseq_available() {
 #endif
 }
 
+static inline uint32_t fallback_get_cpu() {
+    auto cpu_id = sched_getcpu();
+    if (cpu_id >= 0) {
+        return static_cast<uint32_t>(cpu_id);
+    }
+    unsigned int cpu, numa;
+    if (getcpu(&cpu, &numa) >= 0) {
+        return static_cast<uint32_t>(cpu);
+    }
+    return 0;
+};
+
 static inline uint32_t current_cpu_id() {
 #if defined(__linux__) && defined(__x86_64__)
     if (rseq_available()) {
         auto* rseq = reinterpret_cast<volatile struct rseq*>(get_rseq_ptr());
-        uint32_t cpu_id = rseq->cpu_id;
+        int32_t cpu_id = static_cast<int32_t>(rseq->cpu_id);
         if (cpu_id >= 0) {
-            return cpu_id;
+            return static_cast<uint32_t>(cpu_id);
         }
     }
 #endif
@@ -176,11 +206,14 @@ static inline void* rseq_slab_pop(Slabs* slabs_base,
         "leaq 11b(%%rip), %%rax\n\t"
         "movq %%rax, %c[cs_off](%[rseq])\n\t"
 
-        "movl %c[cpu_off](%[rseq]), %%ecx\n\t"
-        "imulq %[stride], %%rcx, %%r8\n\t"
+        "movl %c[cpu_start_off](%[rseq]), %%r10d\n\t"
+        "imulq %[stride], %%r10, %%r8\n\t"
         "addq %[base], %%r8\n\t"
 
         "movzwl (%%r8, %[cur_off], 1), %%eax\n\t"
+        "movl %c[cpu_off](%[rseq]), %%r11d\n\t"
+        "cmpl %%r10d, %%r11d\n\t"
+        "jne 12b\n\t"
         "testl %%eax, %%eax\n\t"
         "jbe 15f\n\t"
 
@@ -191,6 +224,8 @@ static inline void* rseq_slab_pop(Slabs* slabs_base,
 
         /* COMMIT: write decremented current back */
         "movw %%dx, (%%r8, %[cur_off], 1)\n\t"
+        "xorq %%rax, %%rax\n\t"
+        "movq %%rax, %c[cs_off](%[rseq])\n\t"
 
         /* ---- post-commit ---- */
         "13:\n\t"
@@ -199,6 +234,8 @@ static inline void* rseq_slab_pop(Slabs* slabs_base,
 
         /* ---- empty ---- */
         "15:\n\t"
+        "xorq %%rax, %%rax\n\t"
+        "movq %%rax, %c[cs_off](%[rseq])\n\t"
         "xorq %[result], %[result]\n\t"
         "jmp 16f\n\t"
 
@@ -217,11 +254,12 @@ static inline void* rseq_slab_pop(Slabs* slabs_base,
           [sc_idx]   "r" (static_cast<uint64_t>(sc_idx)),
           [rseq]     "r" (rseq),
           [stride]   "i" (SLAB_STRIDE_BYTES),
+          [cpu_start_off] "i" (RSEQ_CPU_ID_START_OFFSET),
           [cs_off]   "i" (RSEQ_CS_OFFSET),
           [cpu_off]  "i" (RSEQ_CPU_ID_OFFSET),
           [ptr_off]  "i" (SLAB_POINTERS_OFFSET),
           [sig]      "i" (RSEQ_ABORT_SIGNATURE)
-        : "rax", "rcx", "rdx", "r8", "r9", "memory", "cc"
+        : "rax", "rdx", "r8", "r9", "r10", "r11", "memory", "cc"
     );
     return result;
 }
@@ -258,12 +296,15 @@ static inline bool rseq_slab_push(Slabs* slabs_base,
         "leaq 21b(%%rip), %%rax\n\t"
         "movq %%rax, %c[cs_off](%[rseq])\n\t"
 
-        "movl %c[cpu_off](%[rseq]), %%ecx\n\t"
-        "imulq %[stride], %%rcx, %%r8\n\t"
+        "movl %c[cpu_start_off](%[rseq]), %%r10d\n\t"
+        "imulq %[stride], %%r10, %%r8\n\t"
         "addq %[base], %%r8\n\t"
 
         "movzwl (%%r8, %[cur_off], 1), %%eax\n\t"
         "movl (%[caps], %[sc_idx], 4), %%r9d\n\t"
+        "movl %c[cpu_off](%[rseq]), %%r11d\n\t"
+        "cmpl %%r10d, %%r11d\n\t"
+        "jne 22b\n\t"
         "cmpl %%r9d, %%eax\n\t"
         "jge 25f\n\t"
 
@@ -275,6 +316,8 @@ static inline bool rseq_slab_push(Slabs* slabs_base,
         /* COMMIT: write current + 1 back */
         "incl %%eax\n\t"
         "movw %%ax, (%%r8, %[cur_off], 1)\n\t"
+        "xorq %%rax, %%rax\n\t"
+        "movq %%rax, %c[cs_off](%[rseq])\n\t"
 
         /* ---- post-commit ---- */
         "23:\n\t"
@@ -283,6 +326,8 @@ static inline bool rseq_slab_push(Slabs* slabs_base,
 
         /* ---- full ---- */
         "25:\n\t"
+        "xorq %%rax, %%rax\n\t"
+        "movq %%rax, %c[cs_off](%[rseq])\n\t"
         "xorl %k[ok], %k[ok]\n\t"
         "jmp 26f\n\t"
 
@@ -303,11 +348,12 @@ static inline bool rseq_slab_push(Slabs* slabs_base,
           [ptr]      "r" (ptr),
           [rseq]     "r" (rseq),
           [stride]   "i" (SLAB_STRIDE_BYTES),
+          [cpu_start_off] "i" (RSEQ_CPU_ID_START_OFFSET),
           [cs_off]   "i" (RSEQ_CS_OFFSET),
           [cpu_off]  "i" (RSEQ_CPU_ID_OFFSET),
           [ptr_off]  "i" (SLAB_POINTERS_OFFSET),
           [sig]      "i" (RSEQ_ABORT_SIGNATURE)
-        : "rax", "rcx", "r8", "r9", "r10", "memory", "cc"
+        : "rax", "r8", "r9", "r10", "r11", "memory", "cc"
     );
     return ok != 0;
 }
@@ -317,14 +363,6 @@ static inline bool rseq_slab_push(Slabs* slabs_base,
 // ---------------------------------------------------------------------------
 // Unified wrappers (rseq when available, plain fallback otherwise)
 // ---------------------------------------------------------------------------
-
-static inline uint32_t fallback_get_cpu() {
-#if defined(__linux__)
-    return static_cast<uint32_t>(sched_getcpu());
-#else
-    return 0;
-#endif
-}
 
 static inline Slabs* get_slabs(Slabs* slabs_base, uint32_t cpu_id) {
     return reinterpret_cast<Slabs*>(
@@ -339,7 +377,7 @@ static inline void* slab_pop(Slabs* slabs_base,
     if (__builtin_expect(rseq_available(), 1))
         return rseq_slab_pop(slabs_base, sc_idx);
 #endif
-    return fallback_allocate(get_slabs(slabs_base, fallback_get_cpu()), sc_idx);
+    return fallback_allocate(get_slabs(slabs_base, current_cpu_id()), sc_idx);
 }
 
 static inline bool slab_push(Slabs* slabs_base,
@@ -350,7 +388,7 @@ static inline bool slab_push(Slabs* slabs_base,
     if (__builtin_expect(rseq_available(), 1))
         return rseq_slab_push(slabs_base, sc_idx, ptr);
 #endif
-    return fallback_deallocate(get_slabs(slabs_base, fallback_get_cpu()), ptr, sc_idx);
+    return fallback_deallocate(get_slabs(slabs_base, current_cpu_id()), ptr, sc_idx);
 }
 
 #endif /* RSEQ_OPS */
