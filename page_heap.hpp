@@ -26,6 +26,7 @@ allocations are sent to the free lists.
 #include "config.hpp"
 #include <cassert>
 #include <cstdint>
+#include <mutex>
 #include <unordered_map>
 #include <sys/mman.h>
 
@@ -67,6 +68,7 @@ struct PageHeap {
             if (num_pages == 0 || num_pages > MAX_PAGES) {
                 return nullptr;
             }
+            const std::lock_guard<std::mutex> lock(mu);
 
             /*
             Search free lists starting at the requested page count.
@@ -130,6 +132,7 @@ struct PageHeap {
 
         void return_span(Span* span) {
             if (!span) return;
+            const std::lock_guard<std::mutex> lock(mu);
             span->is_free = true;
             span->size = 0;
 
@@ -165,6 +168,7 @@ struct PageHeap {
 
         bool deallocate_span(Span* span) {
             if (!span) return false;
+            const std::lock_guard<std::mutex> lock(mu);
 
             if (span->is_free) {
                 remove_from_free_list(span);
@@ -182,6 +186,7 @@ struct PageHeap {
         Span* free_lists[MAX_PAGES + 1];
         // TODO: replace w/ radix tree or cache friendly hash table
         std::unordered_map<uintptr_t, Span*> page_map;
+        std::mutex mu;
 
         // ---- page map helpers ----
 

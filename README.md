@@ -1,13 +1,11 @@
 A memory allocator implementation in C++ inspired by the TCMalloc design.
 
 ### TODO
-- implement per-CPU caches w/ rseq syscall
-
 - dynamic resizing of transfer cache capacity (number of batches each size class's transfer cache can hold), capacity stealing across size classes
 
 - function inlining/no inlining
 
-- locking on the page heap, central free lists
+- experimenting w/ lock_guard placement. How does the length of critical sections affect latency?
 
 - replace page map with a radix tree or cache friendly hash table
 

@@ -20,6 +20,7 @@ O(1) -- just unlink the span and return it; no scanning required.
 #include "page_heap.hpp"
 #include <algorithm>
 #include <cstddef>
+#include <mutex>
 
 /*
 Each free object within a span is identified by a 16-bit index:
@@ -88,6 +89,7 @@ struct CentralFreeList {
         }
 
         void* allocate() {
+            const std::lock_guard<std::mutex> lock(mu);
             if (!current_span || !span_has_available_objects(current_span)) {
                 current_span = find_available_span();
             }
@@ -125,10 +127,10 @@ struct CentralFreeList {
 
         void deallocate(void* ptr) {
             if (!ptr) return;
-
+            
             Span* span = page_heap->span_for(ptr);
             if (!span) return;
-
+            const std::lock_guard<std::mutex> lock(mu);
             auto* base = reinterpret_cast<std::byte*>(span->start * PAGE_SIZE);
             uint16_t freed_idx = ptr_to_index(ptr, base, size);
 
@@ -177,6 +179,7 @@ struct CentralFreeList {
         PageHeap* page_heap;
         Span* span_list;
         Span* current_span; // cached pointer to a span w/ free objects, making common case allocate in O(1)
+        std::mutex mu;
         uint32_t size; // max # of bytes this size class can store
         uint32_t num_free;
         uint8_t pages; // # of pages associated with this size class
