@@ -16,6 +16,10 @@ Non-rseq fallback uses sched_getcpu() + plain C++ slab methods.
 #include "size_classes.hpp"
 #include <cstdint>
 #include <cstddef>
+#if defined(__linux__)
+#include <sched.h>
+#include <sys/rseq.h>
+#endif
 
 /*
 One slab per each CPU
@@ -100,11 +104,6 @@ inline bool fallback_deallocate(Slabs* slab, void* mem, uint32_t sc_idx) {
     return false;
 }
 
-#if defined(__linux__)
-#include <sched.h>
-#include <sys/rseq.h>
-#endif
-
 static constexpr uint32_t RSEQ_ABORT_SIGNATURE = 0x53053053;
 #if defined(__linux__) && defined(__x86_64__)
 static constexpr int      RSEQ_CPU_ID_START_OFFSET =
@@ -170,6 +169,16 @@ static inline uint32_t current_cpu_id() {
     return fallback_get_cpu();
 }
 
+struct RseqSlabPopResult {
+    void* ptr;
+    bool used_fastpath;
+};
+
+struct RseqSlabPushResult {
+    bool ok;
+    bool used_fastpath;
+};
+
 // ---------------------------------------------------------------------------
 // x86-64 rseq critical sections
 // ---------------------------------------------------------------------------
@@ -180,10 +189,12 @@ Pop one pointer from slab->pointers[] for size class `sc_idx`.
 Returns the pointer, or nullptr if that size class's stack is empty.
 
 */
-static inline void* rseq_slab_pop(Slabs* slabs_base,
-                                   uint32_t sc_idx)
+static inline RseqSlabPopResult rseq_slab_pop(Slabs* slabs_base,
+                                              uint32_t slab_count,
+                                              uint32_t sc_idx)
 {
     void*    result;
+    int      used_fastpath;
     char*    rseq = get_rseq_ptr();
     char*    base = reinterpret_cast<char*>(slabs_base);
     const uint32_t* offsets = SIZE_CLASS_OFFSETS.data();
@@ -207,6 +218,8 @@ static inline void* rseq_slab_pop(Slabs* slabs_base,
         "movq %%rax, %c[cs_off](%[rseq])\n\t"
 
         "movl %c[cpu_start_off](%[rseq]), %%r10d\n\t"
+        "cmpl %k[slab_count], %%r10d\n\t"
+        "jae 17f\n\t"
         "imulq %[stride], %%r10, %%r8\n\t"
         "addq %[base], %%r8\n\t"
 
@@ -226,6 +239,7 @@ static inline void* rseq_slab_pop(Slabs* slabs_base,
         "movw %%dx, (%%r8, %[cur_off], 1)\n\t"
         "xorq %%rax, %%rax\n\t"
         "movq %%rax, %c[cs_off](%[rseq])\n\t"
+        "movl $1, %k[used_fastpath]\n\t"
 
         /* ---- post-commit ---- */
         "13:\n\t"
@@ -236,6 +250,15 @@ static inline void* rseq_slab_pop(Slabs* slabs_base,
         "15:\n\t"
         "xorq %%rax, %%rax\n\t"
         "movq %%rax, %c[cs_off](%[rseq])\n\t"
+        "movl $1, %k[used_fastpath]\n\t"
+        "xorq %[result], %[result]\n\t"
+        "jmp 16f\n\t"
+
+        /* ---- CPU index out of range ---- */
+        "17:\n\t"
+        "xorq %%rax, %%rax\n\t"
+        "movq %%rax, %c[cs_off](%[rseq])\n\t"
+        "xorl %k[used_fastpath], %k[used_fastpath]\n\t"
         "xorq %[result], %[result]\n\t"
         "jmp 16f\n\t"
 
@@ -247,10 +270,12 @@ static inline void* rseq_slab_pop(Slabs* slabs_base,
         /* ---- done ---- */
         "16:\n\t"
 
-        : [result] "=&r" (result)
+        : [result] "=&r" (result),
+          [used_fastpath] "=r" (used_fastpath)
         : [base]     "r" (base),
           [cur_off]  "r" (cur_off),
           [offsets]  "r" (offsets),
+          [slab_count] "r" (slab_count),
           [sc_idx]   "r" (static_cast<uint64_t>(sc_idx)),
           [rseq]     "r" (rseq),
           [stride]   "i" (SLAB_STRIDE_BYTES),
@@ -261,18 +286,20 @@ static inline void* rseq_slab_pop(Slabs* slabs_base,
           [sig]      "i" (RSEQ_ABORT_SIGNATURE)
         : "rax", "rdx", "r8", "r9", "r10", "r11", "memory", "cc"
     );
-    return result;
+    return RseqSlabPopResult{result, used_fastpath != 0};
 }
 
 /*
 Push `ptr` onto slab->pointers[] for size class `sc_idx`.
 Returns true on success, false if that size class's stack is full.
 */
-static inline bool rseq_slab_push(Slabs* slabs_base,
-                                   uint32_t sc_idx,
-                                   void* ptr)
+static inline RseqSlabPushResult rseq_slab_push(Slabs* slabs_base,
+                                                uint32_t slab_count,
+                                                uint32_t sc_idx,
+                                                void* ptr)
 {
     int      ok;
+    int      used_fastpath;
     char*    rseq = get_rseq_ptr();
     char*    base = reinterpret_cast<char*>(slabs_base);
     const uint32_t* offsets = SIZE_CLASS_OFFSETS.data();
@@ -297,6 +324,8 @@ static inline bool rseq_slab_push(Slabs* slabs_base,
         "movq %%rax, %c[cs_off](%[rseq])\n\t"
 
         "movl %c[cpu_start_off](%[rseq]), %%r10d\n\t"
+        "cmpl %k[slab_count], %%r10d\n\t"
+        "jae 27f\n\t"
         "imulq %[stride], %%r10, %%r8\n\t"
         "addq %[base], %%r8\n\t"
 
@@ -318,6 +347,7 @@ static inline bool rseq_slab_push(Slabs* slabs_base,
         "movw %%ax, (%%r8, %[cur_off], 1)\n\t"
         "xorq %%rax, %%rax\n\t"
         "movq %%rax, %c[cs_off](%[rseq])\n\t"
+        "movl $1, %k[used_fastpath]\n\t"
 
         /* ---- post-commit ---- */
         "23:\n\t"
@@ -328,6 +358,15 @@ static inline bool rseq_slab_push(Slabs* slabs_base,
         "25:\n\t"
         "xorq %%rax, %%rax\n\t"
         "movq %%rax, %c[cs_off](%[rseq])\n\t"
+        "movl $1, %k[used_fastpath]\n\t"
+        "xorl %k[ok], %k[ok]\n\t"
+        "jmp 26f\n\t"
+
+        /* ---- CPU index out of range ---- */
+        "27:\n\t"
+        "xorq %%rax, %%rax\n\t"
+        "movq %%rax, %c[cs_off](%[rseq])\n\t"
+        "xorl %k[used_fastpath], %k[used_fastpath]\n\t"
         "xorl %k[ok], %k[ok]\n\t"
         "jmp 26f\n\t"
 
@@ -339,11 +378,13 @@ static inline bool rseq_slab_push(Slabs* slabs_base,
         /* ---- done ---- */
         "26:\n\t"
 
-        : [ok] "=&r" (ok)
+        : [ok] "=r" (ok),
+          [used_fastpath] "=r" (used_fastpath)
         : [base]     "r" (base),
           [cur_off]  "r" (cur_off),
           [offsets]  "r" (offsets),
           [caps]     "r" (capacities),
+          [slab_count] "r" (slab_count),
           [sc_idx]   "r" (static_cast<uint64_t>(sc_idx)),
           [ptr]      "r" (ptr),
           [rseq]     "r" (rseq),
@@ -355,7 +396,7 @@ static inline bool rseq_slab_push(Slabs* slabs_base,
           [sig]      "i" (RSEQ_ABORT_SIGNATURE)
         : "rax", "r8", "r9", "r10", "r11", "memory", "cc"
     );
-    return ok != 0;
+    return RseqSlabPushResult{ok != 0, used_fastpath != 0};
 }
 
 #endif /* __linux__ && __x86_64__ */
@@ -369,26 +410,46 @@ static inline Slabs* get_slabs(Slabs* slabs_base, uint32_t cpu_id) {
         reinterpret_cast<char*>(slabs_base) + cpu_id * SLAB_STRIDE_BYTES);
 }
 
+static inline Slabs* get_slabs_checked(Slabs* slabs_base,
+                                       uint32_t slab_count,
+                                       uint32_t cpu_id)
+{
+    if (cpu_id >= slab_count) return nullptr;
+    return get_slabs(slabs_base, cpu_id);
+}
+
 // TODO: implement prefetching?
 static inline void* slab_pop(Slabs* slabs_base,
+                              uint32_t slab_count,
                               uint32_t sc_idx)
 {
 #if defined(__linux__) && defined(__x86_64__)
-    if (__builtin_expect(rseq_available(), 1))
-        return rseq_slab_pop(slabs_base, sc_idx);
+    if (__builtin_expect(rseq_available(), 1)) {
+        RseqSlabPopResult result = rseq_slab_pop(slabs_base, slab_count, sc_idx);
+        if (result.used_fastpath) {
+            return result.ptr;
+        }
+    }
 #endif
-    return fallback_allocate(get_slabs(slabs_base, current_cpu_id()), sc_idx);
+    Slabs* slab = get_slabs_checked(slabs_base, slab_count, current_cpu_id());
+    return slab ? fallback_allocate(slab, sc_idx) : nullptr;
 }
 
 static inline bool slab_push(Slabs* slabs_base,
+                              uint32_t slab_count,
                               uint32_t sc_idx,
                               void* ptr)
 {
 #if defined(__linux__) && defined(__x86_64__)
-    if (__builtin_expect(rseq_available(), 1))
-        return rseq_slab_push(slabs_base, sc_idx, ptr);
+    if (__builtin_expect(rseq_available(), 1)) {
+        RseqSlabPushResult result = rseq_slab_push(slabs_base, slab_count, sc_idx, ptr);
+        if (result.used_fastpath) {
+            return result.ok;
+        }
+    }
 #endif
-    return fallback_deallocate(get_slabs(slabs_base, current_cpu_id()), ptr, sc_idx);
+    Slabs* slab = get_slabs_checked(slabs_base, slab_count, current_cpu_id());
+    return slab ? fallback_deallocate(slab, ptr, sc_idx) : false;
 }
 
 #endif /* RSEQ_OPS */

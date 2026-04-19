@@ -23,11 +23,21 @@ struct Allocator {
             cpu_set_t affinity_mask;
             CPU_ZERO(&affinity_mask);
             sched_getaffinity(0, sizeof(affinity_mask), &affinity_mask);
-            const size_t num_cpus = static_cast<uint32_t>(CPU_COUNT(&affinity_mask));
+            
+            slab_count = 0;
+            for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
+                if (CPU_ISSET(cpu, &affinity_mask)) {
+                    slab_count = static_cast<uint32_t>(cpu + 1);
+                }
+            }
+
 #else
-            const size_t num_cpus = std::thread::hardware_concurrency();
+            slab_count = static_cast<uint32_t>(std::thread::hardware_concurrency());
 #endif
-            per_cpu_caches = static_cast<Slabs*>(mmap(nullptr, num_cpus * SLAB_STRIDE_BYTES,
+            if (slab_count == 0) slab_count = 1;
+            per_cpu_caches = static_cast<Slabs*>(mmap(
+                nullptr, 
+                static_cast<size_t>(slab_count) * SLAB_STRIDE_BYTES,
                 PROT_READ | PROT_WRITE,
                 MAP_ANONYMOUS | MAP_PRIVATE,
                 -1, 0));
@@ -46,11 +56,14 @@ struct Allocator {
                 return nullptr;
             }
 
-            void* ptr = slab_pop(per_cpu_caches, sc_idx);
+            void* ptr = slab_pop(per_cpu_caches, slab_count, sc_idx);
             if (ptr) return ptr;
 
             uint32_t cpu_id = current_cpu_id();
-            Slabs* slabs = get_slabs(per_cpu_caches, cpu_id);
+            Slabs* slabs = get_slabs_checked(per_cpu_caches, slab_count, cpu_id);
+            if (!slabs) {
+                return free_list[sc_idx].allocate();
+            }
             void** dest = slabs->push_destination(sc_idx);
             uint32_t got = transfer_caches[sc_idx].RemoveRange(dest, sc.batch_size);
 
@@ -59,7 +72,7 @@ struct Allocator {
             }
             if (got > 0) {
                 slabs->commit_push(sc_idx, got);
-                return slab_pop(per_cpu_caches, sc_idx);
+                return slab_pop(per_cpu_caches, slab_count, sc_idx);
             }
 
             return nullptr;
@@ -75,10 +88,14 @@ struct Allocator {
                 return;
             }
 
-            if (slab_push(per_cpu_caches, sc_idx, mem)) return;
+            if (slab_push(per_cpu_caches, slab_count, sc_idx, mem)) return;
 
             uint32_t cpu_id = current_cpu_id();
-            Slabs* slabs = get_slabs(per_cpu_caches, cpu_id);
+            Slabs* slabs = get_slabs_checked(per_cpu_caches, slab_count, cpu_id);
+            if (!slabs) {
+                free_list[sc_idx].deallocate(mem);
+                return;
+            }
             uint32_t n = sc.batch_size;
             void** src = slabs->pop_source(sc_idx, n);
 
@@ -88,7 +105,7 @@ struct Allocator {
             }
 
             slabs->commit_pop(sc_idx, n);
-            slab_push(per_cpu_caches, sc_idx, mem);
+            slab_push(per_cpu_caches, slab_count, sc_idx, mem);
         }
 
     private:
@@ -96,6 +113,7 @@ struct Allocator {
         CentralFreeList free_list[NUM_SIZE_CLASSES];
         TransferCache transfer_caches[NUM_SIZE_CLASSES];
         Slabs* per_cpu_caches;
+        uint32_t slab_count;
 
 };
 #endif
