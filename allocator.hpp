@@ -59,23 +59,21 @@ struct Allocator {
             void* ptr = slab_pop(per_cpu_caches, slab_count, sc_idx);
             if (ptr) return ptr;
 
-            uint32_t cpu_id = current_cpu_id();
-            Slabs* slabs = get_slabs_checked(per_cpu_caches, slab_count, cpu_id);
-            if (!slabs) {
-                return free_list[sc_idx].allocate();
-            }
-            void** dest = slabs->push_destination(sc_idx);
-            uint32_t got = transfer_caches[sc_idx].RemoveRange(dest, sc.batch_size);
+            void* batch[MAX_BATCH_SIZE];
+            int32_t got = refill_batch(sc_idx, sc.batch_size, batch);
+            if (got == 0) return nullptr;
 
-            if (got == 0) {
-                got = free_list[sc_idx].allocate_batch(dest, sc.batch_size);
+            // Return one object directly and republish the rest via the
+            // existing single-object slab fast path.
+            void* result = batch[--got];
+            while (got > 0) {
+                if (!slab_push(per_cpu_caches, slab_count, sc_idx, batch[got - 1])) {
+                    release_batch(sc_idx, batch, got);
+                    break;
+                }
+                --got;
             }
-            if (got > 0) {
-                slabs->commit_push(sc_idx, got);
-                return slab_pop(per_cpu_caches, slab_count, sc_idx);
-            }
-
-            return nullptr;
+            return result;
         }
 
         void deallocate(void* mem) {
@@ -90,22 +88,21 @@ struct Allocator {
 
             if (slab_push(per_cpu_caches, slab_count, sc_idx, mem)) return;
 
-            uint32_t cpu_id = current_cpu_id();
-            Slabs* slabs = get_slabs_checked(per_cpu_caches, slab_count, cpu_id);
-            if (!slabs) {
+            void* batch[MAX_BATCH_SIZE];
+            uint32_t drained = 0;
+            while (drained < sc.batch_size) {
+                void* ptr = slab_pop(per_cpu_caches, slab_count, sc_idx);
+                if (!ptr) break;
+                batch[drained++] = ptr;
+            }
+
+            if (drained > 0) {
+                release_batch(sc_idx, batch, drained);
+            }
+
+            if (!slab_push(per_cpu_caches, slab_count, sc_idx, mem)) {
                 free_list[sc_idx].deallocate(mem);
-                return;
             }
-            uint32_t n = sc.batch_size;
-            void** src = slabs->pop_source(sc_idx, n);
-
-            uint32_t inserted = transfer_caches[sc_idx].InsertRange(src, n);
-            if (inserted == 0) {
-                free_list[sc_idx].deallocate_batch(src, n);
-            }
-
-            slabs->commit_pop(sc_idx, n);
-            slab_push(per_cpu_caches, slab_count, sc_idx, mem);
         }
 
     private:
@@ -114,6 +111,21 @@ struct Allocator {
         TransferCache transfer_caches[NUM_SIZE_CLASSES];
         Slabs* per_cpu_caches;
         uint32_t slab_count;
+
+        uint32_t refill_batch(uint32_t sc_idx, uint32_t count, void** batch) {
+            uint32_t got = transfer_caches[sc_idx].RemoveRange(batch, count);
+            if (got == 0) {
+                got = free_list[sc_idx].allocate_batch(batch, count);
+            }
+            return got;
+        }
+
+        void release_batch(uint32_t sc_idx, void** batch, uint32_t count) {
+            uint32_t inserted = transfer_caches[sc_idx].InsertRange(batch, count);
+            if (inserted < count) {
+                free_list[sc_idx].deallocate_batch(batch + inserted, count - inserted);
+            }
+        }
 
 };
 #endif

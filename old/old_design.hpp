@@ -6,12 +6,12 @@ Central free list
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <mutex>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <cassert>
-#include <iostream>
 
 #include "../config.hpp"
 
@@ -100,6 +100,7 @@ struct Allocator {
 //                       << ", available_bytes=" << available_bytes << "\n";
 // #endif
             // traverse the free list to find a free block that contains enough size to satisfy the request
+            std::lock_guard<std::mutex> lock(mu);
             if (size <= available_bytes) {
                 Block* prev;
                 Block* curr;
@@ -195,15 +196,46 @@ struct Allocator {
         }
 
         // Returns a block to the free list for reuse, but does not free the memory.
-        template <typename T>
-        bool return_back(T* ptr) {
-            // ptr points to the start of the Block's memory
-            Block* block = reinterpret_cast<Block*>(
-                reinterpret_cast<std::byte*>(ptr) - header_size());
-            return return_back(block);
-        }
+        // template <typename T>
+        // bool return_back(T* ptr) {
+        //     // ptr points to the start of the Block's memory
+        //     Block* block = reinterpret_cast<Block*>(
+        //         reinterpret_cast<std::byte*>(ptr) - header_size());
+        //     return return_back(block);
+        // }
 
-        bool return_back(Block* block) {
+//         bool return_back(Block* block) {
+//             std::lock_guard<std::mutex> lock(mu);
+//             if (!block || block->is_free) {
+//                 return false;
+//             }
+// // #ifndef NDEBUG
+// //             std::cout << "[return_back] returning block @ " << block
+// //                       << " (size=" << block->size << ") to free list\n";
+// // #endif
+//             block->is_free = true;
+//             block->next = nullptr;
+//             available_bytes += block->size;
+
+//             Block* merged = coalesce_around(block);
+//             if (merged == block) {
+//                 insert_free(block);
+// // #ifndef NDEBUG
+// //                 std::cout << "[return_back] inserted block @ " << block
+// //                           << " at free-list head\n";
+// //             } else {
+// //                 std::cout << "[return_back] coalesced into owner block @ " << merged << "\n";
+// // #endif
+//             }
+
+// // #ifndef NDEBUG
+// //             assert_header_footer_match(merged);
+// // #endif
+
+//             return true;
+//         }
+
+        bool return_back_unlocked(Block* block) {
             if (!block || block->is_free) {
                 return false;
             }
@@ -250,6 +282,7 @@ struct Allocator {
         In any case, memory must be cleaned up
         */
         bool deallocate(Block* block) {
+            std::lock_guard<std::mutex> lock(mu);
             if (!block) {
                 return false;
             }
@@ -270,10 +303,10 @@ struct Allocator {
             // For brk-allocated blocks, only shrink if this is the heap tail.
             if (block_end(block) != brk_heap_end) {
                 #ifndef NDEBUG
-                std::cout << "brk-allocated block not at heap end; returning to free list instead\n";
+                //std::cout << "brk-allocated block not at heap end; returning to free list instead\n";
                 #endif
                 
-                return_back(block);
+                return_back_unlocked(block);
                 return true;
             }
             int result = brk(reinterpret_cast<void*>(block));
@@ -291,6 +324,7 @@ struct Allocator {
         size_t available_bytes;
         std::byte* brk_heap_start = nullptr;
         std::byte* brk_heap_end = nullptr;
+        std::mutex mu;
 // #ifndef NDEBUG
 //         AllocateTrace last_allocate_trace{};
 // #endif

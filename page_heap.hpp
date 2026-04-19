@@ -162,6 +162,7 @@ struct PageHeap {
         }
 
         Span* span_for(void* ptr) {
+            const std::lock_guard<std::mutex> lock(mu);
             uintptr_t page_id = reinterpret_cast<uintptr_t>(ptr) / PAGE_SIZE;
             return lookup(page_id);
         }

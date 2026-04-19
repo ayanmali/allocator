@@ -1,5 +1,4 @@
 #include "/root/allocator/allocator.hpp"
-#include <cstdint>
 #include <cstdio>
 
 int main() {

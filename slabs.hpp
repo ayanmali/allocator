@@ -206,7 +206,7 @@ static inline RseqSlabPopResult rseq_slab_pop(Slabs* slabs_base,
         ".balign 32\n\t"
         "11:\n\t"
         ".long 0, 0\n\t"
-        ".quad 12f, 13f, 14f\n\t"
+        ".quad 12f, 13f - 12f, 14f\n\t"
         ".popsection\n\t"
         ".pushsection __rseq_cs_ptr_array, \"aw\"\n\t"
         ".quad 11b\n\t"
@@ -262,7 +262,8 @@ static inline RseqSlabPopResult rseq_slab_pop(Slabs* slabs_base,
         "xorq %[result], %[result]\n\t"
         "jmp 16f\n\t"
 
-        /* ---- abort handler (signature must precede label) ---- */
+        /* ---- abort handler ---- */
+        ".byte 0x0f, 0xb9, 0x3d\n\t"
         ".long %c[sig]\n\t"
         "14:\n\t"
         "jmp 12b\n\t"
@@ -312,7 +313,7 @@ static inline RseqSlabPushResult rseq_slab_push(Slabs* slabs_base,
         ".balign 32\n\t"
         "21:\n\t"
         ".long 0, 0\n\t"
-        ".quad 22f, 23f, 24f\n\t"
+        ".quad 22f, 23f - 22f, 24f\n\t"
         ".popsection\n\t"
         ".pushsection __rseq_cs_ptr_array, \"aw\"\n\t"
         ".quad 21b\n\t"
@@ -371,6 +372,7 @@ static inline RseqSlabPushResult rseq_slab_push(Slabs* slabs_base,
         "jmp 26f\n\t"
 
         /* ---- abort handler ---- */
+        ".byte 0x0f, 0xb9, 0x3d\n\t"
         ".long %c[sig]\n\t"
         "24:\n\t"
         "jmp 22b\n\t"

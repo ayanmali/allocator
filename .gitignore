@@ -2,5 +2,8 @@
 *.log
 *.out.*
 main
-*dbg
+*dbg*
 queues/
+perf*
+stress*
+thread*
